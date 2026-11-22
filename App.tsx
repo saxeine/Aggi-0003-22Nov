@@ -1,3 +1,4 @@
+import { AudioEngine, generateCustomSpeech } from './services/customSpeech';
 
 import React, { useState, useEffect } from 'react';
 import MediaPanel from './components/MediaPanel';
@@ -985,7 +986,7 @@ const App: React.FC = () => {
       }
   };
 
-  const handleRegenerate = async (newScript: string) => {
+  const handleRegenerate = async (newScript: string, engine: AudioEngine) => {
       setToolLoadingState(prev => ({ ...prev, 'regenerate': true }));
       setGeneratedAudio(null);
       try {
@@ -1005,7 +1006,7 @@ const App: React.FC = () => {
           const speechText = (cleanedRegen || (newScript || '').trim()).substring(0, 4000).trim();
           if (!speechText) {
               audioNote = 'Podcast script text was empty — audio synthesis was skipped.';
-          } else if (settings.provider === 'gemini') {
+          } else if (engine.type === 'gemini') {
               try {
                   audioBase64 = await generateSpeech(speechText, speakers, voiceSettings);
               } catch (speechErr) {
@@ -1016,7 +1017,7 @@ const App: React.FC = () => {
               } else {
                   audioNote = 'Audio generation failed with the Gemini engine. Your transcript is ready below — you can retry audio from the player.';
               }
-          } else if (settings.provider === 'maggi') {
+          } else if (engine.type === 'maggi') {
               try {
                   const maggiStore = getMaggiStore();
                   await maggiStore.hydrate();
@@ -1043,8 +1044,13 @@ const App: React.FC = () => {
                   audioNote = `FreeLLMAPI (MAGGI) voice synthesis failed (${speechErr?.message || 'unavailable'}). Check Settings → AI Engine → MAGGI → Podcast Voice / TTS Model or assign an available TTS next in sequence.`;
               }
           } else {
-              const providerLabel = settings.provider === 'ollama' ? 'Ollama' : 'Custom AI';
-              audioNote = `Audio (TTS) is not available with the ${providerLabel} brain — it produces text only. Your transcript is ready below; switch Settings → AI Engine to Gemini or FreeLLMAPI (MAGGI) to generate audio.`;
+              try {
+                  audioBase64 = await generateCustomSpeech(speechText, engine.settings);
+                  audioMimeType = 'audio/mpeg';
+                  setGeneratedAudio(audioBase64);
+              } catch (speechErr: any) {
+                  audioNote = `Custom speech synthesis failed (${speechErr?.message || 'unavailable'}). Check the endpoint, model, voice, credentials and browser CORS access, then retry.`;
+              }
           }
 
           // 2. Update Preview Code (HTML)

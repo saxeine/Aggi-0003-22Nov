@@ -36,7 +36,7 @@ describe('buildScriptLinesHtml', () => {
 
   it('skips blank lines', () => {
     const html = buildScriptLinesHtml('\n\n\n', voice);
-    expect(html).toBe('<div style="max-width: 800px; margin: 0 auto;"></div>');
+    expect(html).toBe('<div data-podcast-script style="max-width: 800px; margin: 0 auto;"></div>');
   });
 });
 

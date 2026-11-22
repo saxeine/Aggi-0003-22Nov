@@ -1,3 +1,4 @@
+import { AudioEngine } from '../services/customSpeech';
 import React, { useEffect, useRef, useState } from 'react';
 import { VoiceSettings } from '../types';
 import ArtifactPreview from './ArtifactPreview';
@@ -9,7 +10,7 @@ interface PodcastResultViewProps {
   onClosePreview: () => void;
   generatedAudio: string | null;
   onSaveAudio: (audioData: string, filename: string) => void;
-  onRegenerate?: (newScript: string) => void;
+  onRegenerate?: (newScript: string, engine: AudioEngine) => void;
   isLoading: boolean;
   activeTool: string | null;
   activeFormat: PodcastFormatId | null;
@@ -46,6 +47,8 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
   const [saveFilename, setSaveFilename] = useState('');
   const [isEditingScript, setIsEditingScript] = useState(false);
   const [scriptContent, setScriptContent] = useState('');
+  const [engine, setEngine] = useState<'gemini' | 'maggi' | 'custom'>('gemini');
+  const [customSpeech, setCustomSpeech] = useState({ endpoint: '', model: '', voice: '', apiKey: '' });
 
   const currentFormat = (activeFormat ?? 'podcast_1') as PodcastFormatId;
   const { hostOnly: hostOnlyActive, hostConfigured } = computePodcastGate({
@@ -141,7 +144,8 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
     if (!previewCode) return;
     const parser = new DOMParser();
     const doc = parser.parseFromString(previewCode, 'text/html');
-    const divs = doc.querySelectorAll('body > div > div');
+    const scriptRoot = doc.querySelector('[data-podcast-script]') || doc.body.lastElementChild;
+    const divs = scriptRoot?.querySelectorAll(':scope > div') || [];
     let text = '';
     if (divs.length > 0) {
       divs.forEach(div => {
@@ -156,7 +160,7 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
 
   const handleSaveScript = () => {
     if (onRegenerate) {
-      onRegenerate(scriptContent);
+      onRegenerate(scriptContent, engine === 'custom' ? { type: 'custom', settings: customSpeech } : engine === 'maggi' ? { type: 'maggi' } : { type: 'gemini' });
       setIsEditingScript(false);
     }
   };
@@ -398,7 +402,7 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
       {/* Interactive Edit Modal */}
       {isEditingScript && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-app-panel border border-app-border rounded-2xl p-6 w-full max-w-4xl h-[80vh] shadow-2xl animate-scale-in flex flex-col">
+          <div className="bg-app-panel border border-app-border rounded-2xl p-6 w-full max-w-4xl max-h-[90vh] h-[80vh] overflow-y-auto shadow-2xl animate-scale-in flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold text-app-text flex items-center gap-2">
                 <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -413,7 +417,7 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
               </button>
             </div>
 
-            <div className="flex-1 bg-app-bg rounded-lg border border-app-border p-4 mb-4 overflow-hidden flex flex-col">
+            <div className="flex-1 min-h-32 bg-app-bg rounded-lg border border-app-border p-4 mb-4 overflow-hidden flex flex-col">
               <p className="text-xs text-app-dim mb-2">Edit the script below. You can add new speakers (e.g., "Guest: Hello") or modify existing dialogue.</p>
               <textarea
                 value={scriptContent}
@@ -423,6 +427,19 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
               />
             </div>
 
+            <div className="mb-4 space-y-2">
+              <label className="text-sm text-app-text" htmlFor="speech-engine">Audio engine</label>
+              <select id="speech-engine" value={engine} onChange={e => setEngine(e.target.value as typeof engine)} className="ml-3 bg-app-bg text-app-text border border-app-border rounded p-2">
+                <option value="gemini">Gemini</option><option value="maggi">MAGGI</option><option value="custom">Custom speech endpoint</option>
+              </select>
+              {engine === 'custom' && <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {([['endpoint', 'Speech endpoint URL', 'url'], ['model', 'Speech model', 'text'], ['voice', 'Voice', 'text'], ['apiKey', 'API key (optional)', 'password']] as const).map(([key, label, type]) => (
+                  <label key={key} className="text-xs text-app-dim">{label}<input type={type} value={customSpeech[key]} onChange={e => setCustomSpeech({ ...customSpeech, [key]: e.target.value })} className="block w-full bg-app-bg text-app-text border border-app-border rounded p-2" /></label>
+                ))}
+                <p className="text-xs text-app-dim sm:col-span-2">OpenAI-compatible speech endpoint returning MP3; browser CORS access is required. Custom speech uses one voice. Credentials are sent directly to the endpoint.</p>
+              </div>}
+              <p className="text-xs text-app-dim">Audio uses the first 4,000 characters of the script. Gemini and MAGGI use their configured voice settings.</p>
+            </div>
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setIsEditingScript(false)}
@@ -432,6 +449,7 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
               </button>
               <button
                 onClick={handleSaveScript}
+                disabled={isLoading || !scriptContent.trim() || (engine === 'custom' && (!customSpeech.endpoint.trim() || !customSpeech.model.trim() || !customSpeech.voice.trim()))}
                 className="px-6 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold rounded-lg shadow-lg shadow-purple-500/20 transition-all flex items-center gap-2"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

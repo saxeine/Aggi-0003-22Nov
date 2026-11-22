@@ -23,7 +23,8 @@ export const generateCustomAIResponse = async (
   apiPath: string,
   currentPrompt: string,
   history: Message[],
-  mediaItems: MediaItem[]
+  mediaItems: MediaItem[],
+  options?: { signal?: AbortSignal; maxTokens?: number },
 ): Promise<{ text: string }> => {
   const messages: any[] = [];
 
@@ -71,6 +72,7 @@ export const generateCustomAIResponse = async (
 
   const response = await fetch('/api/custom-ai', {
     method: 'POST',
+    signal: options?.signal,
     headers: {
       'Content-Type': 'application/json',
       ...(apiKey ? { 'x-custom-ai-key': apiKey } : {}),
@@ -79,7 +81,8 @@ export const generateCustomAIResponse = async (
       baseUrl,
       modelName,
       apiPath,
-      messages
+      messages,
+      ...(options?.maxTokens ? { maxTokens: options.maxTokens } : {}),
     })
   });
 

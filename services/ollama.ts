@@ -138,6 +138,9 @@ async function browserDirectFetch(
   timeoutMs = 90_000
 ): Promise<Response> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener('abort', abort, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   const isNgrok = baseUrl.toLowerCase().includes('ngrok');
@@ -169,6 +172,8 @@ async function browserDirectFetch(
     return res;
   } catch (err: any) {
     clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', abort);
+    if (options.signal?.aborted) throw err;
     if (err instanceof OllamaError) throw err;
     if (err?.name === 'AbortError') {
       throw new OllamaError('timeout', `Ollama request timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
@@ -203,6 +208,7 @@ async function fetchLoopbackWithFallback(
       const response = await browserDirectFetch('/ollama', path, options, timeoutMs);
       return { response, via: 'vite-proxy' };
     } catch {
+      if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       // Fall through to direct loopback attempts
     }
   }
@@ -211,6 +217,7 @@ async function fetchLoopbackWithFallback(
     const response = await browserDirectFetch(cleaned, path, options, timeoutMs);
     return { response, via: 'browser-direct' };
   } catch (err: any) {
+    if (options.signal?.aborted) throw err;
     if (cleaned.includes('localhost')) {
       const fallbackUrl = cleaned.replace('localhost', '127.0.0.1');
       try {
@@ -386,7 +393,8 @@ export const generateOllamaResponse = async function* (
   modelName: string,
   currentPrompt: string,
   history: Message[],
-  mediaItems: MediaItem[]
+  mediaItems: MediaItem[],
+  options?: { signal?: AbortSignal; maxTokens?: number },
 ): AsyncGenerator<string, void, unknown> {
   const images = mediaItems
     .filter((item) => item.type === "image")
@@ -429,12 +437,14 @@ export const generateOllamaResponse = async function* (
   if (!isLoopbackOrPrivateEndpoint(normalizedEndpoint)) {
     const proxyRes = await fetch('/api/ollama/chat', {
       method: 'POST',
+      signal: options?.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         endpoint: normalizedEndpoint,
         model: modelName,
         messages,
         stream: true,
+        ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}),
       }),
     });
 
@@ -453,10 +463,12 @@ export const generateOllamaResponse = async function* (
         try {
           response = await browserDirectFetch(normalizedEndpoint, '/api/chat', {
             method: 'POST',
+            signal: options?.signal,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: modelName, messages, stream: true }),
+            body: JSON.stringify({ model: modelName, messages, stream: true, ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}) }),
           });
         } catch {
+          if (options?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
           // Fall through to MAGGI non-streaming relay
         }
       }
@@ -464,12 +476,14 @@ export const generateOllamaResponse = async function* (
       if (!response) {
         const maggiRes = await fetch('/api/maggi/chat', {
           method: 'POST',
+          signal: options?.signal,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             provider: 'ollama',
             baseUrl: normalizedEndpoint,
             model: modelName,
             messages,
+            ...(options?.maxTokens ? { maxTokens: options.maxTokens } : {}),
           }),
         });
         const { json: maggiJson } = await parseSafeJson(maggiRes);
@@ -489,11 +503,13 @@ export const generateOllamaResponse = async function* (
   } else {
     const result = await fetchLoopbackWithFallback(normalizedEndpoint, '/api/chat', {
       method: "POST",
+      signal: options?.signal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelName,
         messages,
         stream: true,
+        ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}),
       }),
     });
     response = result.response;

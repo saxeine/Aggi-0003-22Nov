@@ -1,3 +1,4 @@
+import TestSubmission from '../TestSubmission';
 import React, { useRef, useState } from 'react';
 import { MaggiSettings as Settings, FreeLlmKeyEntry, PROVIDER_LABELS } from '../../maggi/config';
 import { createBrain } from '../../services/maggi/brain';
@@ -512,6 +513,7 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset, onOp
               </span>
             )}
           </div>
+          <TestSubmission config={{ provider: 'maggi', settings }} />
           {probe?.voiceModels?.length ? (
             <div className="max-h-24 overflow-y-auto custom-scrollbar rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2">
               <div className="mb-1 text-[10px] font-bold uppercase text-emerald-400">
