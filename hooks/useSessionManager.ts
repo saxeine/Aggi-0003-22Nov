@@ -538,6 +538,40 @@ export const useSessionManager = () => {
         return { targetId, combinedMedia: [...existingMedia, newItem], newItems: [newItem] };
     };
 
+    /**
+     * Save a generated session website back into a specific session as an
+     * HTML source (`Website: …`). Replaces the previous website source with
+     * the same name instead of stacking duplicates, and deliberately does
+     * NOT add it to selectedMediaIds so the next website generation does
+     * not nest the previous page inside itself.
+     */
+    const saveSessionWebsite = (sessionId: string, title: string, html: string) => {
+        const b64 = btoa(unescape(encodeURIComponent(html)));
+        const newItem: MediaItem = {
+            id: Math.random().toString(36).substring(7),
+            name: title,
+            mimeType: 'text/html',
+            data: b64,
+            type: 'html'
+        };
+
+        setSessions(prev => prev.map((s: any) => {
+            if (s.id !== sessionId) return s;
+            const existing = s.mediaItems.find((m: MediaItem) => m.type === 'html' && m.name === title);
+            if (existing) {
+                return {
+                    ...s,
+                    mediaItems: s.mediaItems.map((m: MediaItem) =>
+                        m.id === existing.id ? { ...m, mimeType: 'text/html', data: b64 } : m
+                    )
+                };
+            }
+            return { ...s, mediaItems: [...s.mediaItems, newItem] };
+        }));
+
+        return { targetId: sessionId, newItem };
+    };
+
     const handleAddLink = (url: string) => {
         let targetId = activeSessionId;
         if (!targetId) {
@@ -737,6 +771,7 @@ export const useSessionManager = () => {
         processUploadedFiles,
         addTextItem,
         addHtmlItem,
+        saveSessionWebsite,
         handleAddLink,
         batchAddLinks,
         handleRemoveMedia,
