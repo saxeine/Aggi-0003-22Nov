@@ -28,6 +28,7 @@ import { generateResponse, generateSpeech, searchWeb, chunkText, base64ToText, t
 import { generateUnifiedAIResponse } from './services/unifiedAi';
 import { buildToolPrompt } from './utils/toolPrompts';
 import { buildAudioPlayerHtml, buildAudioNoticeHtml, buildPodcastDocumentHtml, buildErrorHtml } from './utils/podcastHtml';
+import { buildSessionWebsiteHtml, sessionWebsiteFilename, sessionWebsiteSourceName, downloadSessionWebsiteHtml } from './utils/sessionWebsite';
 import type { PodcastRole } from './utils/podcastGating';
 import { loadAudioBlobFromIDB } from './services/storage';
 import { saveGlobalHistorySafely } from './services/historyStorage';
@@ -66,6 +67,7 @@ const App: React.FC = () => {
     handleToggleAllMedia,
     combineMediaItems,
     addHtmlItem,
+    saveSessionWebsite,
     isStorageInitialized
   } = useSessionManager();
 
@@ -237,6 +239,25 @@ const App: React.FC = () => {
   const handleSelectSession = (id: string) => {
       setActiveSessionId(id);
       setViewMode('workspace');
+  };
+
+  // Offline "session → website": no AI call, no API key. Builds a
+  // self-contained page from the session's (selected) sources, downloads
+  // it as <session>-website.html, saves it back into the session as a
+  // `Website: …` HTML source, and opens it in the preview pane.
+  const handleGenerateSessionWebsite = (sessionId: string) => {
+      const target = sessions.find(s => s.id === sessionId);
+      if (!target) return;
+      const html = buildSessionWebsiteHtml(target);
+      downloadSessionWebsiteHtml(html, sessionWebsiteFilename(target));
+      saveSessionWebsite(target.id, sessionWebsiteSourceName(target), html);
+      setActiveSessionId(target.id);
+      setViewMode('workspace');
+      setPreviewCode(html);
+      setFocusedMediaItem(null);
+      setIsPreviewMinimized(false);
+      setIsFullWidthPreview(false);
+      if (isMindMapOpen) setIsMainPanelCollapsed(true);
   };
 
   const onFileUpload = async (files: File[]) => {
@@ -1201,6 +1222,7 @@ const App: React.FC = () => {
                   onOpenMIPrOMPT={() => setViewMode('miprompt')}
                   onOpenFinance={() => setViewMode('finance')}
                   onOpenMaggi={() => setViewMode('maggi')}
+                  onGenerateWebsite={handleGenerateSessionWebsite}
               />
               <SessionModal 
                   isOpen={isModalOpen} 
@@ -1353,6 +1375,7 @@ const App: React.FC = () => {
             onRenameMediaItem={handleRenameMediaItem} // Pass the new handler
             onCombineMedia={onCombineMedia}
             onViewMedia={handleFocusMedia}
+            onGenerateWebsite={handleGenerateSessionWebsite}
             onLoadAudio={handleLoadAudio}
             currentTheme={theme}
             onSetTheme={setTheme}
@@ -1517,6 +1540,7 @@ const App: React.FC = () => {
                    onRemove={onRemoveMedia}
                    onRenameMediaItem={handleRenameMediaItem} // Pass the new handler
                    onViewMedia={handleFocusMedia}
+                   onGenerateWebsite={handleGenerateSessionWebsite}
                    currentTheme={theme}
                    onSetTheme={setTheme}
                    settings={settings}

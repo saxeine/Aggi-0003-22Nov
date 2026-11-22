@@ -27,6 +27,8 @@ interface MediaPanelProps {
   onRemove: (id: string) => void;
   onRenameMediaItem: (id: string, newName: string) => void; 
   onViewMedia: (item: MediaItem) => void;
+  /** Build a self-contained website from a session (no AI call needed). */
+  onGenerateWebsite?: (sessionId: string) => void;
   onLoadAudio?: (item: MediaItem) => void;
   currentTheme: Theme;
   onSetTheme: (theme: Theme) => void;
@@ -73,6 +75,7 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
   onRemove,
   onRenameMediaItem, 
   onViewMedia,
+  onGenerateWebsite,
   onLoadAudio,
   currentTheme,
   onSetTheme,
@@ -599,6 +602,15 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                     
                     {!isEditing && (
                         <div className={`absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 ${isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity bg-app-panel shadow-md p-1 rounded-lg border border-app-border`}>
+                            {onGenerateWebsite && (
+                            <>
+                            <button onClick={(e) => { e.stopPropagation(); onGenerateWebsite(session.id); }} className="flex items-center gap-1 px-2 py-1 rounded hover:bg-sky-500 hover:text-white text-app-dim transition-colors" title="Turn session into a website (offline, no AI)">
+                            <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" /></svg>
+                            {showLabels && <span className="text-[9px] font-bold uppercase">Web</span>}
+                            </button>
+                            <div className="w-px h-3 bg-app-border mx-0.5"></div>
+                            </>
+                            )}
                             <button onClick={(e) => startEditing(e, session)} className="flex items-center gap-1 px-2 py-1 rounded hover:bg-app-text hover:text-app-bg text-app-dim transition-colors" title="Rename">
                             <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /></svg>
                             {showLabels && <span className="text-[9px] font-bold uppercase">Edit</span>}

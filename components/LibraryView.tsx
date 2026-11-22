@@ -20,6 +20,8 @@ interface LibraryViewProps {
   onOpenMIPrOMPT?: () => void;
   onOpenFinance?: () => void;
   onOpenMaggi?: () => void;
+  /** Build a self-contained website from this session (no AI call needed). */
+  onGenerateWebsite?: (id: string) => void;
 }
 
 const LibraryView: React.FC<LibraryViewProps> = ({ 
@@ -36,7 +38,8 @@ const LibraryView: React.FC<LibraryViewProps> = ({
   onOpenMedia,
   onOpenMIPrOMPT,
   onOpenFinance,
-  onOpenMaggi
+  onOpenMaggi,
+  onGenerateWebsite
 }) => {
   const { t } = useLanguage();
   const [viewMode, setViewMode] = useState<'grid' | 'list' | 'icon'>('grid');
@@ -429,7 +432,19 @@ const LibraryView: React.FC<LibraryViewProps> = ({
                      </div>
                  </div>
                  {(viewMode === 'grid' || viewMode === 'icon') && (
-                 <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${viewMode === 'icon' ? 'bg-black/40 rounded-md backdrop-blur-sm' : ''}`}>
+                 <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${viewMode === 'icon' ? 'bg-black/40 rounded-md backdrop-blur-sm flex-wrap justify-end' : ''}`}>
+                    {onGenerateWebsite && (
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onGenerateWebsite(session.id); }}
+                        className={`p-1.5 text-app-dim hover:text-sky-400 hover:bg-sky-500/20 rounded-md transition-colors`}
+                        title="Turn session into a website (offline, no AI)"
+                    >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                            <circle cx="12" cy="12" r="9" />
+                            <path strokeLinecap="round" d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" />
+                        </svg>
+                    </button>
+                    )}
                     <button 
                         onClick={(e) => handleStartRename(e, session)}
                         className={`p-1.5 text-green-500 hover:text-green-500 hover:bg-green-500/20 rounded-md transition-colors ${viewMode === 'grid' ? 'text-app-dim hover:text-app-text hover:bg-app-bg/80' : ''}`}
@@ -505,6 +520,18 @@ const LibraryView: React.FC<LibraryViewProps> = ({
               
               {viewMode === 'list' && (
                  <div className="flex items-center gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity ml-4 pl-4 border-l border-app-border/40">
+                    {onGenerateWebsite && (
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onGenerateWebsite(session.id); }}
+                        className="p-1.5 text-app-dim hover:text-sky-400 hover:bg-sky-500/20 rounded-md transition-colors"
+                        title="Turn session into a website (offline, no AI)"
+                    >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                            <circle cx="12" cy="12" r="9" />
+                            <path strokeLinecap="round" d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" />
+                        </svg>
+                    </button>
+                    )}
                     <button 
                         onClick={(e) => handleStartRename(e, session)}
                         className="p-1.5 text-app-dim hover:text-app-text hover:bg-app-bg/80 rounded-md transition-colors"
