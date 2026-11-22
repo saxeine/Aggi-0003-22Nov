@@ -1,9 +1,10 @@
 
 import React, { useRef, useState, useMemo } from 'react';
-import { MediaItem, Session, Theme, ThemeSettings, VoiceSettings, CharacterPrompt } from '../types';
+import { MediaItem, Session, Theme, ThemeSettings, VoiceSettings, CharacterPrompt, CastMember } from '../types';
 import CharacterLibraryModal from './CharacterLibraryModal';
+import CastLibraryModal from './CastLibraryModal';
 import { useLanguage } from '../contexts/LanguageContext';
-import { computePodcastGate, requiredRolesFor, PodcastRole, PodcastFormatId } from '../utils/podcastGating';
+import { computePodcastGate, requiredRolesFor, buildStaggeredDefaultVoiceSettings, PodcastRole, PodcastFormatId } from '../utils/podcastGating';
 
 interface MediaPanelProps {
   activeTab: 'sessions' | 'sources' | 'tools' | 'audio';
@@ -51,6 +52,10 @@ interface MediaPanelProps {
   onAddCharacter?: (char: Omit<CharacterPrompt, 'id' | 'category'>) => void;
   onUpdateCharacter?: (id: string, updates: Partial<CharacterPrompt>) => void;
   onDeleteCharacter?: (id: string) => void;
+  castLibrary?: CastMember[];
+  onAddCastMember?: (member: Omit<CastMember, 'id'>) => void;
+  onUpdateCastMember?: (id: string, updates: Partial<CastMember>) => void;
+  onDeleteCastMember?: (id: string) => void;
 }
 
 const MediaPanel: React.FC<MediaPanelProps> = ({ 
@@ -97,7 +102,11 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
   characters = [],
   onAddCharacter,
   onUpdateCharacter,
-  onDeleteCharacter
+  onDeleteCharacter,
+  castLibrary = [],
+  onAddCastMember,
+  onUpdateCastMember,
+  onDeleteCastMember
 }) => {
   const { t } = useLanguage();
   const [localTouchedRoles, setLocalTouchedRoles] = useState<PodcastRole[]>([]);
@@ -126,6 +135,7 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
   const [lastSearchQuery, setLastSearchQuery] = useState<string | null>(null);
   const [isRefilling, setIsRefilling] = useState(false);
   const [isCharacterModalOpen, setIsCharacterModalOpen] = useState(false);
+  const [isCastLibraryOpen, setIsCastLibraryOpen] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -842,29 +852,38 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                                 <span className="text-emerald-400">Step 1</span> — Speakers
                               </h4>
                           </div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <button
                               type="button"
                               onClick={() => {
-                                const isSv = voiceSettings.language === 'Swedish';
-                                onUpdateVoiceSettings({
-                                  ...voiceSettings,
-                                  host: isSv ? 'Fenrir' : 'Kore',
-                                  hostLabel: isSv ? 'Lars' : 'Narrator Bot',
-                                  hostMemberId: isSv ? 'sys-host-sv-1' : 'sys-host-1',
-                                  expertMemberId: undefined,
-                                  guestMemberId: undefined,
-                                });
-                                setEffectiveTouchedRoles(['host']);
+                                const { voiceSettings: nextVoiceSettings, touchedRoles: nextTouched } =
+                                  buildStaggeredDefaultVoiceSettings(
+                                    voiceSettings,
+                                    castLibrary.length ? castLibrary : undefined,
+                                    { shortSwedishLabels: true },
+                                  );
+                                onUpdateVoiceSettings(nextVoiceSettings);
+                                setEffectiveTouchedRoles(nextTouched);
                               }}
                               className="text-[10px] font-bold text-emerald-400 hover:bg-emerald-500/20 bg-emerald-500/10 px-2 py-1 rounded border border-emerald-500/30 transition-all"
-                              title="Configure default Host speaker only"
+                              title="Insert staggered Male/Female default characters for Host, Expert, and Guest"
                             >
                               {t('studio.useDefault')}
                             </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsCastLibraryOpen(true)}
+                              className="text-[10px] font-bold text-purple-400 hover:bg-purple-500/20 bg-purple-500/10 px-2 py-1 rounded border border-purple-500/30 uppercase tracking-wider flex items-center gap-1 transition-all"
+                              title="Open Cast Library"
+                            >
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.653.149-1.268.432-1.828M14 10a6 6 0 01-6 6H6a6 6 0 01-6-6V7a3 3 0 013-3h7a3 3 0 013 3v3z" /></svg>
+                              Cast
+                            </button>
                             <button 
+                              type="button"
                               onClick={() => setIsCharacterModalOpen(true)}
                               className="text-[10px] font-bold text-rose-500 hover:text-rose-400 uppercase tracking-widest flex items-center gap-1 bg-rose-500/10 px-2 py-1 rounded border border-rose-500/20 transition-all"
+                              title="Open Character Prompt Library"
                             >
                               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" /></svg>
                               Library
@@ -873,21 +892,49 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                       </div>
                       <div className="space-y-3">
                         {([
-                          { key: 'host' as const, labelKey: 'hostLabel' as const, memberKey: 'hostMemberId' as const, title: 'Host', optional: false },
-                          { key: 'expert' as const, labelKey: 'expertLabel' as const, memberKey: 'expertMemberId' as const, title: 'Expert', optional: true },
-                          { key: 'guest' as const, labelKey: 'guestLabel' as const, memberKey: 'guestMemberId' as const, title: 'Guest', optional: true }
+                          { key: 'host' as const, labelKey: 'hostLabel' as const, bioKey: 'hostBio' as const, avatarKey: 'hostAvatar' as const, memberKey: 'hostMemberId' as const, title: 'Host', optional: false },
+                          { key: 'expert' as const, labelKey: 'expertLabel' as const, bioKey: 'expertBio' as const, avatarKey: 'expertAvatar' as const, memberKey: 'expertMemberId' as const, title: 'Expert', optional: true },
+                          { key: 'guest' as const, labelKey: 'guestLabel' as const, bioKey: 'guestBio' as const, avatarKey: 'guestAvatar' as const, memberKey: 'guestMemberId' as const, title: 'Guest', optional: true }
                         ]).map((role) => {
                             const isRoleConfigured = effectiveTouchedRoles.includes(role.key);
+                            const assignedMemberId = isRoleConfigured ? voiceSettings[role.memberKey] : undefined;
+                            const assignedMember = assignedMemberId ? castLibrary.find(m => m.id === assignedMemberId) : undefined;
                             const currentVoiceValue = isRoleConfigured
-                              ? (voiceSettings.language === 'Swedish'
-                                  ? (availableVoices.find(v => v.lang === 'Swedish' && v.voice === voiceSettings[role.key])?.name || voiceSettings[role.key] || '')
-                                  : (voiceSettings[role.key] || ''))
+                              ? (assignedMember
+                                  ? `cast:${assignedMember.id}`
+                                  : (voiceSettings.language === 'Swedish'
+                                      ? (availableVoices.find(v => v.lang === 'Swedish' && v.voice === voiceSettings[role.key])?.name || voiceSettings[role.key] || '')
+                                      : (voiceSettings[role.key] || '')))
                               : '';
                             const currentDisplayLabel = isRoleConfigured ? (voiceSettings[role.labelKey] || '') : '';
+                            const currentAvatar = isRoleConfigured ? (voiceSettings[role.avatarKey] || assignedMember?.avatar) : undefined;
+                            const currentBio = isRoleConfigured ? (voiceSettings[role.bioKey] || assignedMember?.bio) : undefined;
+                            const isSwedish = voiceSettings.language === 'Swedish';
+                            const genderFilter = genderFilters[role.key] || 'All';
+                            const filteredCastOptions = castLibrary.filter(m => {
+                              const langMatch = m.category === 'user' || (isSwedish ? m.id.includes('-sv-') : !m.id.includes('-sv-'));
+                              if (!langMatch) return false;
+                              if (genderFilter !== 'All') return (m.gender || 'Female') === genderFilter;
+                              return true;
+                            });
+                            const filteredVoiceOptions = availableVoices.filter(v => {
+                              const langMatch = isSwedish ? v.lang === 'Swedish' : v.lang === 'English';
+                              if (!langMatch) return false;
+                              if (genderFilter !== 'All') return v.gender === genderFilter;
+                              return true;
+                            });
                             return (
                             <div key={role.key} className="p-2.5 bg-app-panel rounded-lg border border-app-border space-y-2">
                                 <div className="flex items-center justify-between gap-2">
                                     <div className="flex items-center gap-1.5 flex-wrap">
+                                        {currentAvatar && (
+                                          <img
+                                            src={currentAvatar}
+                                            alt={role.title}
+                                            className="w-5 h-5 rounded-full object-cover border border-app-border"
+                                            referrerPolicy="no-referrer"
+                                          />
+                                        )}
                                         <span className="text-[10px] font-bold uppercase text-app-text">{role.title}</span>
                                         {role.optional && (
                                           <span className="text-[8px] text-zinc-500 uppercase">{t('studio.optional')}</span>
@@ -901,7 +948,12 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                                         type="button"
                                         onClick={() => {
                                           untouchRole(role.key);
-                                          onUpdateVoiceSettings({ ...voiceSettings, [role.memberKey]: undefined });
+                                          onUpdateVoiceSettings({
+                                            ...voiceSettings,
+                                            [role.memberKey]: undefined,
+                                            [role.avatarKey]: undefined,
+                                            [role.bioKey]: undefined,
+                                          });
                                         }}
                                         className="text-[9px] text-zinc-500 hover:text-red-400 transition-colors font-semibold uppercase"
                                       >
@@ -927,7 +979,7 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                                     />
                                 </div>
                                 <div className="flex items-center justify-between my-1">
-                                    <div className="text-[9px] font-bold text-app-dim uppercase">Voice / Gender</div>
+                                    <div className="text-[9px] font-bold text-app-dim uppercase">Cast / Voice</div>
                                     <div className="flex gap-0.5 bg-zinc-950 px-1 py-0.5 rounded border border-zinc-800">
                                         {(['All', 'Female', 'Male'] as const).map(g => (
                                             <button 
@@ -946,21 +998,46 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                                 <select 
                                     value={currentVoiceValue}
                                     onChange={(e) => {
-                                        if (!e.target.value) {
+                                        const val = e.target.value;
+                                        if (!val) {
                                           untouchRole(role.key);
-                                          onUpdateVoiceSettings({ ...voiceSettings, [role.memberKey]: undefined });
+                                          onUpdateVoiceSettings({
+                                            ...voiceSettings,
+                                            [role.memberKey]: undefined,
+                                            [role.avatarKey]: undefined,
+                                            [role.bioKey]: undefined,
+                                          });
                                           return;
                                         }
                                         touchRole(role.key);
-                                        const isSwedish = voiceSettings.language === 'Swedish';
-                                        const options = availableVoices.filter(v => isSwedish ? v.lang === 'Swedish' : v.lang === 'English');
-                                        const selectedVoice = options.find(v => v.name === e.target.value);
-                                        const updates: any = { [role.key]: selectedVoice ? (selectedVoice.voice || selectedVoice.name) : e.target.value };
-                                        
-                                        const standardNames = ['Sax', 'Chameleon', 'The Pinpoint', 'Lars', 'Elena', 'Astrid', 'Oskar', 'Freja', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr', 'Aoede', 'Narrator Bot', 'Dr. Insight', 'Curious Listener'];
+                                        const standardNames = ['Sax', 'Chameleon', 'The Pinpoint', 'Lars', 'Elena', 'Astrid', 'Oskar', 'Freja', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr', 'Aoede', 'Narrator Bot', 'Dr. Insight', 'Curious Listener', 'Lars (Värd)', 'Elena (Expert)', 'Astrid (Trend)', 'Oskar (Affär)', 'Freja (Berättare)'];
                                         const existingLabel = isRoleConfigured ? (voiceSettings[role.labelKey] || '') : '';
-                                        const isCustom = existingLabel && !standardNames.includes(existingLabel);
-                                        
+                                        const isCustom = existingLabel && !standardNames.includes(existingLabel) && !castLibrary.some(cm => cm.name === existingLabel);
+
+                                        if (val.startsWith('cast:')) {
+                                          const memberId = val.slice(5);
+                                          const member = castLibrary.find(cm => cm.id === memberId);
+                                          if (member) {
+                                            const updates: any = {
+                                              [role.key]: member.voice,
+                                              [role.memberKey]: member.id,
+                                              [role.bioKey]: member.bio,
+                                              [role.avatarKey]: member.avatar,
+                                            };
+                                            if (!isCustom) {
+                                              updates[role.labelKey] = member.name;
+                                            }
+                                            onUpdateVoiceSettings({ ...voiceSettings, ...updates });
+                                            return;
+                                          }
+                                        }
+
+                                        const options = availableVoices.filter(v => isSwedish ? v.lang === 'Swedish' : v.lang === 'English');
+                                        const selectedVoice = options.find(v => v.name === val);
+                                        const updates: any = {
+                                          [role.key]: selectedVoice ? (selectedVoice.voice || selectedVoice.name) : val,
+                                          [role.memberKey]: undefined,
+                                        };
                                         if (selectedVoice && !isCustom) {
                                             updates[role.labelKey] = selectedVoice.name;
                                         }
@@ -969,20 +1046,28 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
                                     className="w-full bg-app-input border border-app-border text-xs text-app-text rounded px-2 py-1 focus:outline-none"
                                 >
                                     <option value="">{t('studio.selectCastMember')}</option>
-                                    {availableVoices.filter(v => {
-                                        const langMatch = (!voiceSettings.language || voiceSettings.language === 'English') ? v.lang === 'English' : v.lang === 'Swedish';
-                                        if (!langMatch) return false;
-                                        const filter = genderFilters[role.key] || 'All';
-                                        if (filter !== 'All') {
-                                            return v.gender === filter;
-                                        }
-                                        return true;
-                                    }).map(v => (
-                                        <option key={v.name} value={v.name}>
-                                            {v.gender === 'Male' ? '♂' : '♀'} {v.name} ({v.style})
-                                        </option>
-                                    ))}
+                                    {filteredCastOptions.length > 0 && (
+                                      <optgroup label="Cast Library">
+                                        {filteredCastOptions.map(member => (
+                                          <option key={member.id} value={`cast:${member.id}`}>
+                                            {member.gender === 'Male' ? '♂' : member.gender === 'Neutral' ? '⚪' : '♀'} {member.name} ({member.voice}{member.category === 'user' ? ' • Custom' : ''})
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                    <optgroup label="Studio Voices">
+                                      {filteredVoiceOptions.map(v => (
+                                          <option key={v.name} value={v.name}>
+                                              {v.gender === 'Male' ? '♂' : '♀'} {v.name} ({v.style})
+                                          </option>
+                                      ))}
+                                    </optgroup>
                                 </select>
+                                {currentBio && (
+                                  <div className="text-[9px] text-app-dim italic line-clamp-2 px-1">
+                                    {currentBio}
+                                  </div>
+                                )}
                                 
                                 <div className="space-y-1">
                                     <label className="text-[9px] text-app-dim uppercase font-bold">Character Profile</label>
@@ -1319,6 +1404,49 @@ const MediaPanel: React.FC<MediaPanelProps> = ({
         characters={characters}
         onAdd={(char) => onAddCharacter?.(char)}
         onDelete={(id) => onDeleteCharacter?.(id)}
+      />
+
+      <CastLibraryModal
+        isOpen={isCastLibraryOpen}
+        onClose={() => setIsCastLibraryOpen(false)}
+        castLibrary={castLibrary}
+        voiceSettings={voiceSettings}
+        onResetVoiceSettings={() => {
+          const { voiceSettings: nextVoiceSettings, touchedRoles: nextTouched } =
+            buildStaggeredDefaultVoiceSettings(
+              voiceSettings,
+              castLibrary.length ? castLibrary : undefined,
+              { shortSwedishLabels: true },
+            );
+          setEffectiveTouchedRoles(nextTouched);
+          onUpdateVoiceSettings(nextVoiceSettings);
+        }}
+        onAssignRole={(role, member) => {
+          const updates: Partial<VoiceSettings> = {};
+          const memberKey = `${role}MemberId` as 'hostMemberId' | 'expertMemberId' | 'guestMemberId';
+          const labelKey = `${role}Label` as 'hostLabel' | 'expertLabel' | 'guestLabel';
+          const bioKey = `${role}Bio` as 'hostBio' | 'expertBio' | 'guestBio';
+          const avatarKey = `${role}Avatar` as 'hostAvatar' | 'expertAvatar' | 'guestAvatar';
+          const isAlreadyAssigned = effectiveTouchedRoles.includes(role) && voiceSettings[memberKey] === member.id;
+
+          if (isAlreadyAssigned) {
+            untouchRole(role);
+            updates[memberKey] = undefined;
+            updates[avatarKey] = undefined;
+            updates[bioKey] = undefined;
+          } else {
+            touchRole(role);
+            updates[role] = member.voice;
+            updates[labelKey] = member.name;
+            updates[bioKey] = member.bio;
+            updates[avatarKey] = member.avatar;
+            updates[memberKey] = member.id;
+          }
+          onUpdateVoiceSettings({ ...voiceSettings, ...updates });
+        }}
+        onAdd={(member) => onAddCastMember?.(member)}
+        onUpdate={(id, updates) => onUpdateCastMember?.(id, updates)}
+        onDelete={(id) => onDeleteCastMember?.(id)}
       />
     </div>
   );

@@ -29,7 +29,18 @@ import {
   relayOpenAiStream,
   blockPrivateHost,
   parseEnvKeyPool,
+  getMaskedEnvKeyPool,
   buildKeyPoolTargets,
+  PLATFORM_TTS_DEFAULTS,
+  isVoiceModelId,
+  buildVoicePoolTargets,
+  buildSequentialVoiceCandidates,
+  formatVoiceModelKey,
+  cleanTtsText,
+  mapGeminiVoiceToOpenAi,
+  detectAudioMimeType,
+  addWavHeaderBuffer,
+  concatWavBuffers,
   htmlToText,
 } from './maggi/keyPool';
 
@@ -53,10 +64,21 @@ export const createMaggiRouter = (): Router => {
       hasEnvKey: !!FREELLM_ENV.apiKey,
       envKeyPoolCount: envPool.length,
       geminiAvailable: !!process.env.GEMINI_API_KEY,
+      voiceTts: true,
       pdf: true,
       docx: true,
       urlFetch: true,
       version: 1,
+    });
+  });
+
+  // Return masked server-side env defaults (never exposes raw secrets).
+  router.get('/defaults', (_req, res) => {
+    const entries = getMaskedEnvKeyPool();
+    res.json({
+      ok: true,
+      hasEnvPool: entries.length > 0,
+      entries,
     });
   });
 
@@ -72,13 +94,14 @@ export const createMaggiRouter = (): Router => {
       apiKey,
       freeLlmMode,
       keyPool,
+      overwriteDefaults = false,
       stream = false,
     } = req.body ?? {};
 
     try {
       // ---- Built-in FreeLLMAPI Key-Pool Router (with automatic failover) ----
       if (provider === 'freellmapi' && (freeLlmMode === 'keypool' || (Array.isArray(keyPool) && keyPool.length > 0 && !baseUrl))) {
-        const targets = buildKeyPoolTargets(keyPool, model || 'auto');
+        const targets = buildKeyPoolTargets(keyPool, model || 'auto', !!overwriteDefaults);
         if (!targets.length) {
           res.status(400).json({
             error: 'No enabled FreeLLMAPI keys found in the key pool. Import your freellmapi-keys.json in MAGGI Settings.',
@@ -111,7 +134,11 @@ export const createMaggiRouter = (): Router => {
                 },
               });
               timeout.clear();
-              const text = response.text ?? '';
+              const text = (response.text ?? '').trim();
+              if (!text) {
+                failures.push(`${target.platform} (${target.model}): empty response`);
+                continue;
+              }
               const routedVia = `google/${target.model}`;
               if (stream) {
                 res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -169,12 +196,17 @@ export const createMaggiRouter = (): Router => {
 
             const data = await upstream.json();
             timeout.clear();
-            const text = data.choices?.[0]?.message?.content
+            const rawText = data.choices?.[0]?.message?.content
               ?? data.choices?.[0]?.text
               ?? data.output?.[0]?.content?.[0]?.text
               ?? '';
+            const resolvedText = (typeof rawText === 'string' ? rawText : JSON.stringify(rawText)).trim();
+            if (!resolvedText) {
+              failures.push(`${target.platform} (${target.model}): empty response`);
+              continue;
+            }
             res.json({
-              text: typeof text === 'string' ? text : JSON.stringify(text),
+              text: resolvedText,
               model: data.model || target.model,
               routedVia,
               usage: data.usage
@@ -557,7 +589,7 @@ export const createMaggiRouter = (): Router => {
 
   // ----------------------------------------------------------------- probe --
   router.post('/probe', async (req, res) => {
-    const { provider = 'freellmapi', baseUrl, apiKey, freeLlmMode, keyPool } = req.body ?? {};
+    const { provider = 'freellmapi', baseUrl, apiKey, freeLlmMode, keyPool, overwriteDefaults = false } = req.body ?? {};
     try {
       if (provider === 'ollama') {
         const cleanedBase = (baseUrl || 'http://localhost:11434')
@@ -612,7 +644,7 @@ export const createMaggiRouter = (): Router => {
 
       // ---- Built-in FreeLLMAPI Key-Pool probe ----
       if (provider === 'freellmapi' && (freeLlmMode === 'keypool' || (Array.isArray(keyPool) && keyPool.length > 0 && !baseUrl))) {
-        const targets = buildKeyPoolTargets(keyPool, 'auto');
+        const targets = buildKeyPoolTargets(keyPool, 'auto', !!overwriteDefaults);
         if (!targets.length) {
           res.json({ ok: false, detail: 'No enabled keys in pool. Import freellmapi-keys.json above.' });
           return;
@@ -629,7 +661,8 @@ export const createMaggiRouter = (): Router => {
                 config: { maxOutputTokens: 1 },
               });
               timeout.clear();
-              return { platform: target.platform, ok: true, models: target.defaultModels.map((m) => `google:${m}`) };
+              const voiceModels = (PLATFORM_TTS_DEFAULTS.google ?? []).map((m) => `google:${m}`);
+              return { platform: target.platform, ok: true, models: target.defaultModels.map((m) => `google:${m}`), voiceModels };
             }
 
             const modelsRes = await fetch(`${target.baseUrl}/models`, {
@@ -647,8 +680,11 @@ export const createMaggiRouter = (): Router => {
                 const freeIds = rawIds.filter((id) => id.includes(':free') || id === 'openrouter/free');
                 rawIds = ['openrouter/free', ...freeIds, ...rawIds.filter((id) => !freeIds.includes(id))];
               }
+              const discoveredVoice = rawIds.filter((id) => isVoiceModelId(id));
+              const fallbackVoice = PLATFORM_TTS_DEFAULTS[target.platform] ?? [];
+              const voiceModels = Array.from(new Set([...discoveredVoice, ...fallbackVoice])).map((m) => `${target.platform}:${m}`);
               const list = (rawIds.length ? rawIds.slice(0, 30) : target.defaultModels).map((m) => `${target.platform}:${m}`);
-              return { platform: target.platform, ok: true, models: list };
+              return { platform: target.platform, ok: true, models: list, voiceModels };
             }
 
             // Some endpoints (e.g. Zhipu) don't expose GET /models — verify with a 1-token chat ping
@@ -669,22 +705,31 @@ export const createMaggiRouter = (): Router => {
               });
               timeout.clear();
               if (pingRes.ok) {
-                return { platform: target.platform, ok: true, models: target.defaultModels.map((m) => `${target.platform}:${m}`) };
+                const voiceModels = (PLATFORM_TTS_DEFAULTS[target.platform] ?? []).map((m) => `${target.platform}:${m}`);
+                return { platform: target.platform, ok: true, models: target.defaultModels.map((m) => `${target.platform}:${m}`), voiceModels };
               }
-              return { platform: target.platform, ok: false, error: `HTTP ${pingRes.status}`, models: [] as string[] };
+              return { platform: target.platform, ok: false, error: `HTTP ${pingRes.status}`, models: [] as string[], voiceModels: [] as string[] };
             }
 
             timeout.clear();
-            return { platform: target.platform, ok: false, error: `HTTP ${modelsRes.status}`, models: [] as string[] };
+            return { platform: target.platform, ok: false, error: `HTTP ${modelsRes.status}`, models: [] as string[], voiceModels: [] as string[] };
           } catch (err: any) {
             timeout.clear();
-            return { platform: target.platform, ok: false, error: err?.message || 'failed', models: [] as string[] };
+            return { platform: target.platform, ok: false, error: err?.message || 'failed', models: [] as string[], voiceModels: [] as string[] };
           }
         }));
 
         const ready = results.filter((r) => r.ok);
         const failed = results.filter((r) => !r.ok);
         const allModels = Array.from(new Set(ready.flatMap((r) => r.models))).slice(0, 200);
+        const rawVoiceModels = ready.flatMap((r) => r.voiceModels || []);
+        const geminiHeaderKey = (req.headers['x-gemini-key'] as string) || process.env.GEMINI_API_KEY;
+        if (geminiHeaderKey && !rawVoiceModels.some((m) => m.startsWith('google:'))) {
+          for (const gm of PLATFORM_TTS_DEFAULTS.google ?? []) {
+            rawVoiceModels.push(`google:${gm}`);
+          }
+        }
+        const voiceModels = Array.from(new Set(rawVoiceModels)).slice(0, 60);
         const readyNames = ready.map((r) => r.platform).join(', ');
         const failedNames = failed.map((r) => `${r.platform} (${r.error})`).join(', ');
 
@@ -694,6 +739,7 @@ export const createMaggiRouter = (): Router => {
             ? `Key pool ready: ${ready.length}/${results.length} providers active (${readyNames})${failed.length ? ` · Failed: ${failedNames}` : ''}`
             : `No providers responded (${failedNames})`,
           models: allModels,
+          voiceModels,
           providerResults: results.map(({ platform, ok, error }) => ({ platform, ok, error })),
         });
         return;
@@ -741,10 +787,17 @@ export const createMaggiRouter = (): Router => {
       }
       const data = await upstream.json();
       const models = (data.data ?? data.models ?? []).map((m: any) => m.id ?? m.name).filter(Boolean);
+      const discoveredVoice = models.filter((id: string) => isVoiceModelId(id));
+      const geminiFallbackKey = (req.headers['x-gemini-key'] as string) || process.env.GEMINI_API_KEY;
+      const voiceModels = Array.from(new Set([
+        ...discoveredVoice,
+        ...(geminiFallbackKey ? (PLATFORM_TTS_DEFAULTS.google ?? []) : []),
+      ])).slice(0, 60);
       res.json({
         ok: true,
         detail: `Connected — ${models.length} models available${key ? '' : ' (no key: anonymous providers only)'}`,
         models: models.slice(0, 200),
+        voiceModels,
       });
     } catch (e: any) {
       res.json({
@@ -753,6 +806,497 @@ export const createMaggiRouter = (): Router => {
           ? 'Probe timed out — is FreeLLMAPI running on that port?'
           : (e?.message || 'Probe failed'),
       });
+    }
+  });
+
+  // ------------------------------------------------------------------- tts --
+  const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  interface SpeakerTurn {
+    role: 'host' | 'expert' | 'guest';
+    geminiSpeaker: 'SaxeIn' | 'Expert';
+    text: string;
+  }
+
+  const parseSpeakerTurns = (text: string, voiceSettings: any = {}): SpeakerTurn[] => {
+    const cleaned = cleanTtsText(text);
+    if (!cleaned) return [];
+
+    const hostAliases = Array.from(new Set(['Host', 'SaxeIn', voiceSettings?.hostLabel].filter(Boolean)));
+    const expertAliases = Array.from(new Set(['Expert', voiceSettings?.expertLabel].filter(Boolean)));
+    const guestAliases = Array.from(new Set(['Guest', voiceSettings?.guestLabel].filter(Boolean)));
+
+    const patternList = [
+      ...hostAliases.map((a) => ({ role: 'host' as const, alias: a })),
+      ...expertAliases.map((a) => ({ role: 'expert' as const, alias: a })),
+      ...guestAliases.map((a) => ({ role: 'guest' as const, alias: a })),
+    ];
+
+    const matches: { index: number; endIndex: number; role: 'host' | 'expert' | 'guest' }[] = [];
+    for (const item of patternList) {
+      const rx = new RegExp(`(?:^|\\n)\\s*${escapeRegex(String(item.alias))}\\s*:`, 'gi');
+      let m: RegExpExecArray | null;
+      while ((m = rx.exec(cleaned)) !== null) {
+        matches.push({ index: m.index, endIndex: m.index + m[0].length, role: item.role });
+      }
+    }
+    matches.sort((a, b) => a.index - b.index);
+
+    const turns: SpeakerTurn[] = [];
+    if (matches.length > 0) {
+      if (matches[0].index > 0) {
+        const intro = cleaned.slice(0, matches[0].index).replace(/\s+/g, ' ').trim();
+        if (intro) turns.push({ role: 'host', geminiSpeaker: 'SaxeIn', text: intro });
+      }
+      for (let i = 0; i < matches.length; i++) {
+        const start = matches[i].endIndex;
+        const end = i + 1 < matches.length ? matches[i + 1].index : cleaned.length;
+        const chunk = cleaned.slice(start, end).replace(/\s+/g, ' ').trim();
+        if (chunk) {
+          const role = matches[i].role;
+          turns.push({ role, geminiSpeaker: role === 'host' ? 'SaxeIn' : 'Expert', text: chunk });
+        }
+      }
+    } else {
+      const sentences = cleaned.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+      sentences.forEach((sentence, idx) => {
+        const role = idx % 2 === 0 ? 'host' : 'expert';
+        turns.push({ role, geminiSpeaker: role === 'host' ? 'SaxeIn' : 'Expert', text: sentence.trim() });
+      });
+    }
+    return turns;
+  };
+
+  const synthesizeViaGoogleTts = async (
+    apiKey: string,
+    model: string,
+    text: string,
+    speakers: number,
+    voiceSettings: any = {},
+  ): Promise<{ audioBase64: string; mimeType: string; model: string }> => {
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+    });
+    const hostVoice = voiceSettings?.host || 'Kore';
+    const expertVoice = voiceSettings?.expert || 'Puck';
+    const cleaned = cleanTtsText(text);
+    const turns = speakers >= 2 ? parseSpeakerTurns(cleaned, voiceSettings) : [];
+
+    const config: any = {
+      responseModalities: ['AUDIO'],
+      httpOptions: { apiVersion: 'v1beta' },
+    };
+
+    let resolvedModel = model && model.toLowerCase().includes('tts')
+      ? model
+      : (speakers >= 2 ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts');
+    let requestParts: any[] = [];
+
+    if (speakers >= 2 && turns.length >= 2) {
+      resolvedModel = model && model.toLowerCase().includes('flash-tts') ? model : 'gemini-3.8-flash-tts';
+      config.speechConfig = {
+        multiSpeakerVoiceConfig: {
+          speakerVoiceConfigs: [
+            { speaker: 'SaxeIn', voiceConfig: { prebuiltVoiceConfig: { voiceName: hostVoice } } },
+            { speaker: 'Expert', voiceConfig: { prebuiltVoiceConfig: { voiceName: expertVoice } } },
+          ],
+        },
+      };
+      requestParts = turns.map((t) => ({ text: `${t.geminiSpeaker}: ${t.text}` }));
+    } else {
+      config.speechConfig = {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: hostVoice } },
+      };
+      const hostEsc = escapeRegex(String(voiceSettings?.hostLabel || 'Host'));
+      const langHint = voiceSettings?.language === 'Swedish' ? 'in Swedish' : 'in English';
+      const strippedSingle = cleaned
+        .replace(new RegExp(`(^|\\n)\\s*(${hostEsc}|Host|SaxeIn)\\s*:`, 'gim'), '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const singleText = strippedSingle || cleaned;
+      requestParts = [{ text: `TTS the following content ${langHint}:\n${singleText}` }];
+    }
+
+    const response = await generateContentWithFallback(ai, {
+      model: resolvedModel,
+      contents: [{ role: 'user', parts: requestParts }],
+      config,
+    });
+
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    let rawAudioBase64: string | null = null;
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        rawAudioBase64 = part.inlineData.data;
+        break;
+      }
+    }
+    if (!rawAudioBase64) {
+      throw new Error('Google TTS returned no audio data.');
+    }
+
+    const buf = Buffer.from(rawAudioBase64, 'base64');
+    const isRiff = buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'RIFF';
+    const wavBuf = isRiff ? buf : addWavHeaderBuffer(buf);
+    return {
+      audioBase64: wavBuf.toString('base64'),
+      mimeType: 'audio/wav',
+      model: resolvedModel,
+    };
+  };
+
+  const synthesizeOpenAiSpeechTurn = async (
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    input: string,
+    voice: string,
+    extraHeaders?: Record<string, string>,
+    timeoutMs = 60_000,
+  ): Promise<{ buffer: Buffer; mimeType: string }> => {
+    const attempt = async (withFormat: boolean) => {
+      const timeout = withTimeout(timeoutMs);
+      try {
+        return await fetch(`${baseUrl}/audio/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+            ...(extraHeaders ?? {}),
+          },
+          body: JSON.stringify({
+            model,
+            input,
+            voice,
+            ...(withFormat ? { response_format: 'wav' } : {}),
+          }),
+          signal: timeout.signal,
+        });
+      } finally {
+        timeout.clear();
+      }
+    };
+
+    let upstream = await attempt(true);
+    if (upstream.status === 400) {
+      // Some OpenAI-compatible TTS proxies reject response_format='wav'; retry default format
+      const retry = await attempt(false);
+      if (retry.ok) upstream = retry;
+    }
+
+    if (!upstream.ok) {
+      const raw = await upstream.text().catch(() => '');
+      throw new Error(`HTTP ${upstream.status} ${raw.slice(0, 180)}`);
+    }
+
+    const arrayBuf = await upstream.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
+    if (!buffer.length) throw new Error('Empty audio buffer returned.');
+    const mimeType = detectAudioMimeType(buffer, upstream.headers.get('content-type'));
+    return { buffer, mimeType };
+  };
+
+  const synthesizeViaOpenAiTts = async (
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    text: string,
+    speakers: number,
+    voiceSettings: any = {},
+    extraHeaders?: Record<string, string>,
+  ): Promise<{ audioBase64: string; mimeType: string; model: string }> => {
+    const cleaned = cleanTtsText(text);
+    const hostVoice = mapGeminiVoiceToOpenAi(voiceSettings?.host);
+    const expertVoice = mapGeminiVoiceToOpenAi(voiceSettings?.expert);
+    const guestVoice = mapGeminiVoiceToOpenAi(voiceSettings?.guest);
+
+    const roleVoice = (role: 'host' | 'expert' | 'guest') =>
+      role === 'expert' ? expertVoice : role === 'guest' ? guestVoice : hostVoice;
+
+    if (speakers >= 2) {
+      const turns = parseSpeakerTurns(cleaned, voiceSettings).slice(0, 12);
+      if (turns.length >= 2) {
+        const first = await synthesizeOpenAiSpeechTurn(
+          baseUrl,
+          apiKey,
+          model,
+          turns[0].text.slice(0, 1000),
+          roleVoice(turns[0].role),
+          extraHeaders,
+        );
+        if (first.mimeType === 'audio/wav') {
+          const turnBuffers: Buffer[] = [first.buffer];
+          for (let i = 1; i < turns.length; i++) {
+            const next = await synthesizeOpenAiSpeechTurn(
+              baseUrl,
+              apiKey,
+              model,
+              turns[i].text.slice(0, 1000),
+              roleVoice(turns[i].role),
+              extraHeaders,
+            );
+            turnBuffers.push(next.buffer);
+          }
+          const combined = concatWavBuffers(turnBuffers);
+          if (combined) {
+            return { audioBase64: combined.toString('base64'), mimeType: 'audio/wav', model };
+          }
+        } else {
+          // Endpoint returned non-WAV (e.g. MP3); cannot concat MP3 frames safely cleanly without re-encode,
+          // so synthesize the whole script with host voice for a clean playable single track.
+          const singleAll = await synthesizeOpenAiSpeechTurn(
+            baseUrl,
+            apiKey,
+            model,
+            cleaned.slice(0, 4000),
+            hostVoice,
+            extraHeaders,
+            90_000,
+          );
+          return { audioBase64: singleAll.buffer.toString('base64'), mimeType: singleAll.mimeType, model };
+        }
+      }
+    }
+
+    const hostEsc = escapeRegex(String(voiceSettings?.hostLabel || 'Host'));
+    const strippedSingle = cleaned
+      .replace(new RegExp(`(^|\\n)\\s*(${hostEsc}|Host|SaxeIn)\\s*:`, 'gim'), '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const singleText = (strippedSingle || cleaned).slice(0, 4000);
+    const single = await synthesizeOpenAiSpeechTurn(baseUrl, apiKey, model, singleText, hostVoice, extraHeaders, 90_000);
+    return { audioBase64: single.buffer.toString('base64'), mimeType: single.mimeType, model };
+  };
+
+  const synthesizeViaCloudflareMeloTts = async (
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    text: string,
+    voiceSettings: any = {},
+  ): Promise<{ audioBase64: string; mimeType: string; model: string }> => {
+    const cleaned = cleanTtsText(text).replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const runBase = baseUrl.replace(/\/v1\/?$/i, '');
+    const runUrl = `${runBase}/run/${model}`;
+    const timeout = withTimeout(60_000);
+    try {
+      const upstream = await fetch(runUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          prompt: cleaned,
+          lang: voiceSettings?.language === 'Swedish' ? 'en' : 'en',
+        }),
+        signal: timeout.signal,
+      });
+      if (!upstream.ok) {
+        const raw = await upstream.text().catch(() => '');
+        throw new Error(`HTTP ${upstream.status} ${raw.slice(0, 180)}`);
+      }
+      const data: any = await upstream.json();
+      const rawAudio: string = data?.result?.audio || '';
+      if (!rawAudio) {
+        throw new Error('Cloudflare MeloTTS returned no audio data.');
+      }
+      const buf = Buffer.from(rawAudio, 'base64');
+      const mimeType = detectAudioMimeType(buf, 'audio/mpeg');
+      return { audioBase64: buf.toString('base64'), mimeType, model };
+    } finally {
+      timeout.clear();
+    }
+  };
+
+  router.post('/tts', async (req, res) => {
+    const {
+      provider = 'freellmapi',
+      freeLlmMode,
+      keyPool,
+      overwriteDefaults = false,
+      baseUrl,
+      apiKey,
+      voiceModel = 'auto',
+      text = '',
+      speakers = 1,
+      voiceSettings = {},
+    } = req.body ?? {};
+
+    const rawText = String(text || req.body?.input || '');
+    const normalizedTtsText = cleanTtsText(rawText) || rawText.trim();
+    if (!normalizedTtsText) {
+      res.status(400).json({ error: 'text is required for TTS synthesis (podcast script was empty).' });
+      return;
+    }
+
+    const reqVoiceModel = String(voiceModel || 'auto').trim() || 'auto';
+    const speakerCount = Number(speakers) || 1;
+    const geminiFallbackKey = (req.headers['x-gemini-key'] as string) || process.env.GEMINI_API_KEY;
+    const failures: string[] = [];
+
+    try {
+      // 1. FreeLLMAPI Key-Pool sequential voice routing (tries assigned model first, then next TTS in sequence)
+      if (provider === 'freellmapi' && (freeLlmMode === 'keypool' || (Array.isArray(keyPool) && keyPool.length > 0 && !baseUrl))) {
+        const candidates = buildSequentialVoiceCandidates(keyPool, reqVoiceModel, speakerCount, !!overwriteDefaults);
+        for (const target of candidates) {
+          try {
+            if (target.kind === 'google') {
+              const out = await synthesizeViaGoogleTts(target.apiKey, target.model, normalizedTtsText, speakerCount, voiceSettings);
+              const assignedVoiceModel = formatVoiceModelKey('google', out.model);
+              res.json({
+                ...out,
+                routedVia: `google/${out.model}`,
+                assignedVoiceModel,
+                fallbackUsed: failures.length > 0 || (reqVoiceModel !== 'auto' && assignedVoiceModel.toLowerCase() !== reqVoiceModel.toLowerCase()),
+                ...(failures.length ? { attempted: failures } : {}),
+              });
+              return;
+            }
+
+            if (target.platform === 'cloudflare' && target.baseUrl.includes('/ai/')) {
+              const out = await synthesizeViaCloudflareMeloTts(target.baseUrl, target.apiKey, target.model, normalizedTtsText, voiceSettings);
+              const assignedVoiceModel = formatVoiceModelKey('cloudflare', out.model);
+              res.json({
+                ...out,
+                routedVia: `cloudflare/${out.model}`,
+                assignedVoiceModel,
+                fallbackUsed: failures.length > 0 || (reqVoiceModel !== 'auto' && assignedVoiceModel.toLowerCase() !== reqVoiceModel.toLowerCase()),
+                ...(failures.length ? { attempted: failures } : {}),
+              });
+              return;
+            }
+
+            const out = await synthesizeViaOpenAiTts(
+              target.baseUrl,
+              target.apiKey,
+              target.model,
+              normalizedTtsText,
+              speakerCount,
+              voiceSettings,
+              target.extraHeaders,
+            );
+            const assignedVoiceModel = formatVoiceModelKey(target.platform, out.model);
+            res.json({
+              ...out,
+              routedVia: `${target.platform}/${out.model}`,
+              assignedVoiceModel,
+              fallbackUsed: failures.length > 0 || (reqVoiceModel !== 'auto' && assignedVoiceModel.toLowerCase() !== reqVoiceModel.toLowerCase()),
+              ...(failures.length ? { attempted: failures } : {}),
+            });
+            return;
+          } catch (err: any) {
+            failures.push(`${target.platform} (${target.model}): ${err?.message || 'failed'}`);
+          }
+        }
+      } else if (provider === 'freellmapi' || provider === 'openai') {
+        // 2. FreeLLMAPI Proxy URL or OpenAI-compatible /v1/audio/speech (sequential model fallback)
+        const resolvedBase = normaliseBaseUrl(
+          baseUrl || (provider === 'freellmapi' ? FREELLM_ENV.baseUrl ?? '' : ''),
+        );
+        const resolvedKey = apiKey || (provider === 'freellmapi' ? FREELLM_ENV.apiKey ?? '' : '');
+
+        if (resolvedBase) {
+          const urlErr = validateBaseUrl(resolvedBase);
+          if (urlErr) {
+            res.status(400).json({ error: urlErr, code: 'INVALID_BASE_URL' });
+            return;
+          }
+
+          const requestedStripped = reqVoiceModel !== 'auto'
+            ? (reqVoiceModel.includes(':') && !reqVoiceModel.includes('/') ? reqVoiceModel.split(':')[1] : reqVoiceModel)
+            : '';
+          const proxyModelSequence = Array.from(new Set([
+            ...(requestedStripped ? [requestedStripped] : []),
+            'tts-1',
+            'gpt-4o-mini-tts',
+            'tts-1-hd',
+          ]));
+
+          for (const proxyModel of proxyModelSequence) {
+            try {
+              const out = await synthesizeViaOpenAiTts(
+                resolvedBase,
+                resolvedKey,
+                proxyModel,
+                normalizedTtsText,
+                speakerCount,
+                voiceSettings,
+              );
+              res.json({
+                ...out,
+                routedVia: `freellmapi/${out.model}`,
+                assignedVoiceModel: out.model,
+                fallbackUsed: failures.length > 0,
+                ...(failures.length ? { attempted: failures } : {}),
+              });
+              return;
+            } catch (fetchErr: any) {
+              const formatted = formatFetchError(fetchErr, resolvedBase);
+              if (formatted.isLoopbackUnreachable && !geminiFallbackKey) {
+                res.status(502).json({
+                  error: formatted.message,
+                  code: 'LOOPBACK_UNREACHABLE',
+                });
+                return;
+              }
+              failures.push(`proxy (${proxyModel}): ${formatted.message}`);
+              if (formatted.isLoopbackUnreachable) break;
+            }
+          }
+        } else if (!geminiFallbackKey) {
+          res.status(400).json({
+            error: 'FreeLLMAPI base URL or key pool is not configured for podcast voice synthesis.',
+            code: 'NO_BASE_URL',
+          });
+          return;
+        }
+      }
+
+      // 3. Server / Header Gemini TTS sequential fallback when earlier TTS providers failed or were absent
+      if (geminiFallbackKey) {
+        const geminiModels = speakerCount >= 2
+          ? ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']
+          : ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
+        const strippedReq = reqVoiceModel.includes(':') ? reqVoiceModel.split(':')[1] : reqVoiceModel;
+        const seqModels = Array.from(new Set([
+          ...(strippedReq && strippedReq.toLowerCase().includes('tts') && strippedReq.toLowerCase().includes('gemini') ? [strippedReq] : []),
+          ...geminiModels,
+        ]));
+
+        for (const gm of seqModels) {
+          try {
+            const out = await synthesizeViaGoogleTts(
+              geminiFallbackKey,
+              gm,
+              normalizedTtsText,
+              speakerCount,
+              voiceSettings,
+            );
+            const assignedVoiceModel = formatVoiceModelKey('google', out.model);
+            res.json({
+              ...out,
+              routedVia: `server-gemini/${out.model}`,
+              assignedVoiceModel,
+              fallbackUsed: failures.length > 0 || (reqVoiceModel !== 'auto' && assignedVoiceModel.toLowerCase() !== reqVoiceModel.toLowerCase()),
+              ...(failures.length ? { attempted: failures } : {}),
+            });
+            return;
+          } catch (err: any) {
+            failures.push(`server-gemini (${gm}): ${err?.message || 'failed'}`);
+          }
+        }
+      }
+
+      res.status(failures.length ? 502 : 400).json({
+        error: failures.length
+          ? `FreeLLMAPI podcast voice synthesis failed across sequence:\n• ${failures.join('\n• ')}`
+          : 'No voice/TTS model or TTS-capable provider key is available in FreeLLMAPI.',
+        code: 'TTS_FAILED',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Podcast TTS synthesis failed' });
     }
   });
 

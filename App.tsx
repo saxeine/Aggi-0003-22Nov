@@ -14,9 +14,9 @@ import OfficeTools from './components/OfficeTools';
 import { MediaSuiteView } from './components/MediaSuiteView';
 import MIPrOMPTLibraryView from './components/MIPrOMPTLibraryView';
 import { FinanceView } from './components/FinanceView';
-import MaggiView from './components/MaggiView';
+import MaggiView, { MaggiTab } from './components/MaggiView';
 import SxaBoardApp from './src/media_suite/SxaBoardTool/App';
-import { MediaItem, Message, VoiceSettings, PromptTemplate, CastMember, MIPrOMPTItem } from './types';
+import { MediaItem, Message, VoiceSettings, PromptTemplate, CastMember, MIPrOMPTItem, ThemeSettings } from './types';
 import { useThemeEngine } from './hooks/useThemeEngine';
 import { useSessionManager } from './hooks/useSessionManager';
 import { useAI } from './hooks/useAI';
@@ -33,7 +33,14 @@ import type { PodcastRole } from './utils/podcastGating';
 import { loadAudioBlobFromIDB } from './services/storage';
 import { saveGlobalHistorySafely } from './services/historyStorage';
 import { savePodcastToHistory } from './utils/podcastHistory';
+import {
+  buildMaggiFallbackMediaItem,
+  filterNonDuplicateSessionMedia,
+  loadAutoPodcastDraftFromStore,
+  MAGGI_CONTENTS_HEADER,
+} from './utils/podcastSources';
 import { getMaggiStore } from './services/maggi/store';
+import { generateMaggiSpeech } from './services/maggi/brain';
 import { DEFAULT_GEMINI_MODEL } from './constants/geminiModels';
 
 const App: React.FC = () => {
@@ -93,6 +100,32 @@ const App: React.FC = () => {
 
   // Sidebar State
   const [activeSideTab, setActiveSideTab] = useState<'sessions' | 'sources' | 'tools' | 'audio'>('sources');
+  const [maggiInitialTab, setMaggiInitialTab] = useState<MaggiTab>('chat');
+  const [studioInitialTool, setStudioInitialTool] = useState<string | null>(null);
+  const [podcastDraftTrigger, setPodcastDraftTrigger] = useState<{ text: string; key: number } | null>(null);
+  const [hasExplicitAudioProvider, setHasExplicitAudioProvider] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('gemini_media_aggregator_explicit_audio_provider') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const markExplicitAudioProvider = () => {
+    setHasExplicitAudioProvider(true);
+    try {
+      localStorage.setItem('gemini_media_aggregator_explicit_audio_provider', '1');
+    } catch {
+      /* ignore storage errors */
+    }
+  };
+
+  const handleSettingsUpdateFromPanel = (next: ThemeSettings) => {
+    if (next.provider !== settings.provider) {
+      markExplicitAudioProvider();
+    }
+    setSettings(next);
+  };
 
   // Drawer States
   const [isMainPanelCollapsed, setIsMainPanelCollapsed] = useState(false); 
@@ -108,12 +141,12 @@ const App: React.FC = () => {
       hostBio: 'A clear, authoritative, and friendly voice, perfect for hosting and guiding the listener through complex topics.',
       hostAvatar: 'https://picsum.photos/seed/narrator/60/60',
       hostMemberId: 'sys-host-1',
-      expert: 'Zephyr',
+      expert: 'Puck',
       expertLabel: 'Dr. Insight',
       expertBio: 'A knowledgeable and articulate voice, ideal for explaining intricate details and offering expert opinions.',
       expertAvatar: 'https://picsum.photos/seed/expert/60/60',
       expertMemberId: 'sys-expert-1',
-      guest: 'Puck',
+      guest: 'Zephyr',
       guestLabel: 'Curious Listener',
       guestBio: 'An engaging and inquisitive voice, representing the audience and asking clarifying questions.',
       guestAvatar: 'https://picsum.photos/seed/listener/60/60',
@@ -541,19 +574,38 @@ const App: React.FC = () => {
      else if (toolId === 'text_summarizer') setLastUsedBuilder('txS');
      else setLastUsedBuilder(null);
      
+     const isPodcastTool = isPodcastFormatTool || toolId === 'podcast_creator';
      let activeMediaItems: MediaItem[] = [];
      
      // Resolve independent tool sessions
      if (payload?.isIndependent && payload?.builderSessionId) {
          const targetSession = sessions.find(s => s.id === payload.builderSessionId);
          if (targetSession) {
-             activeMediaItems = targetSession.mediaItems; // use all media items from the selected session or specific? Just use all if not active session since we don't have selected media IDs directly for non-active
+             activeMediaItems = targetSession.mediaItems;
          }
      } else if (activeSession && (!payload?.isIndependent || (payload?.isIndependent && !payload.builderSessionId && payload.includeSessionData))) {
-          // fallback to active session usage
-         activeMediaItems = activeSession.mediaItems.filter(item => 
+         const selected = activeSession.mediaItems.filter(item =>
              activeSession.selectedMediaIds.includes(item.id)
          );
+         activeMediaItems = selected.length > 0
+             ? selected
+             : (payload?.includeSessionData ? activeSession.mediaItems : []);
+     }
+
+     if (isPodcastTool) {
+         activeMediaItems = filterNonDuplicateSessionMedia(activeMediaItems, payload?.customInput);
+         if (!payload?.customInput || !payload.customInput.includes(MAGGI_CONTENTS_HEADER)) {
+             try {
+                 const maggiStore = getMaggiStore();
+                 await maggiStore.hydrate();
+                 const maggiFallback = buildMaggiFallbackMediaItem(maggiStore, activeSession);
+                 if (maggiFallback) {
+                     activeMediaItems = [...activeMediaItems, maggiFallback];
+                 }
+             } catch (maggiErr) {
+                 console.warn('Could not attach MAGGI fallback sources:', maggiErr);
+             }
+         }
      }
      
      if ((toolId === 'youtube_transcript' || toolId === 'text_summarizer') && payload?.mediaItem) {
@@ -564,7 +616,7 @@ const App: React.FC = () => {
          return;
      }
 
-     if (payload?.isIndependent && !payload?.builderSessionId && !payload?.includeSessionData) {
+     if (!isPodcastTool && payload?.isIndependent && !payload?.builderSessionId && !payload?.includeSessionData) {
          activeMediaItems = []; // Ensure no session data is used unless requested
      }
 
@@ -606,7 +658,7 @@ const App: React.FC = () => {
                     const unifiedPrompt = action === 'summarize_translate'
                       ? `Summarize the provided sources concisely and then translate that summary cleanly into ${lang}. Return ONLY the translated text.`
                       : `Translate the following text cleanly into ${lang}. Return ONLY the translated text.\n\n${fullText}`;
-                    code = await generateUnifiedAIResponse(unifiedPrompt, activeMediaItems);
+                    code = await generateUnifiedAIResponse(unifiedPrompt, activeMediaItems, settings);
                 } else if (action === 'summarize_translate') {
                     // 1. Summarize the whole document first
                     const summaryPrompt = `Provide a comprehensive summary of the provided text. Return ONLY the summary content.`;
@@ -642,35 +694,37 @@ const App: React.FC = () => {
 </body>
 </html>`;
             } else if (settings.provider !== 'gemini') {
-                code = await generateUnifiedAIResponse(prompt, activeMediaItems);
+                code = await generateUnifiedAIResponse(prompt, activeMediaItems, settings);
             } else {
                 // Default summarization (one-shot)
                 const result = await generateResponse(prompt, [], activeMediaItems, model, cacheName);
                 code = result.text;
             }
         } else if (settings.provider !== 'gemini') {
-            code = await generateUnifiedAIResponse(prompt, activeMediaItems);
+            code = await generateUnifiedAIResponse(prompt, activeMediaItems, settings);
         } else {
             const result = await generateResponse(prompt, [], activeMediaItems, model, cacheName, toolId === 'crypto_analyst');
             code = result.text;
         }
         if (isPodcast) {
-            code = code.replace(/^```markdown\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
-            const rawText = code.replace(/<[^>]*>?/gm, ' ').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-            const speechText = rawText.substring(0, 4000);
+            code = (code || '').replace(/^```markdown\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+            const strippedText = code
+                .replace(/<\/?[a-zA-Z!/?][^>]*>/gm, ' ')
+                .replace(/[ \t]+/g, ' ')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+            const rawText = strippedText || code.trim();
+            const speechText = rawText.substring(0, 4000).trim();
             const fallbackSpeakers = toolId === 'podcast_2' ? 2 : toolId === 'podcast_3' ? 3 : 1;
             const payloadSpeakerCount = Number(payload?.speakerCount);
             const speakers = Number.isFinite(payloadSpeakerCount) && payloadSpeakerCount >= 1 ? payloadSpeakerCount : fallbackSpeakers;
 
-            // Audio is Gemini TTS only. FreeLLMAPI (MAGGI), Ollama and Custom AI
-            // produce text, so report this clearly instead of failing silently.
-            const providerLabel = settings.provider === 'maggi' ? 'FreeLLMAPI (MAGGI)'
-                : settings.provider === 'ollama' ? 'Ollama'
-                : settings.provider === 'custom' ? 'Custom AI'
-                : 'Gemini';
             let audioBase64: string | null = null;
+            let audioMimeType = 'audio/wav';
             let audioNote = '';
-            if (settings.provider === 'gemini') {
+            if (!speechText) {
+                audioNote = 'Podcast script text was empty — audio synthesis was skipped. Try again or check Settings → AI Engine.';
+            } else if (settings.provider === 'gemini') {
                 try {
                     audioBase64 = await generateSpeech(speechText, speakers, voiceSettings);
                 } catch (speechErr) {
@@ -679,15 +733,41 @@ const App: React.FC = () => {
                 if (!audioBase64) {
                     audioNote = 'Audio generation failed with the Gemini engine. Your transcript is ready below — you can retry audio from the player.';
                 }
+            } else if (settings.provider === 'maggi') {
+                try {
+                    const maggiStore = getMaggiStore();
+                    await maggiStore.hydrate();
+                    const currentMaggiSettings = maggiStore.getSettings();
+                    const maggiResult = await generateMaggiSpeech(
+                        speechText,
+                        speakers,
+                        voiceSettings,
+                        currentMaggiSettings,
+                    );
+                    audioBase64 = maggiResult.audioBase64;
+                    audioMimeType = maggiResult.mimeType || 'audio/wav';
+                    if (
+                        maggiResult.fallbackUsed
+                        && maggiResult.assignedVoiceModel
+                        && !maggiResult.routedVia?.startsWith('server-gemini/')
+                        && maggiResult.assignedVoiceModel !== currentMaggiSettings.freeLlmVoiceModel
+                    ) {
+                        maggiStore.updateSettings({ freeLlmVoiceModel: maggiResult.assignedVoiceModel });
+                    }
+                } catch (speechErr: any) {
+                    console.warn('MAGGI TTS audio generation failed:', speechErr);
+                    audioNote = `FreeLLMAPI (MAGGI) voice synthesis failed (${speechErr?.message || 'unavailable'}). Check Settings → AI Engine → MAGGI → Podcast Voice / TTS Model or assign an available TTS next in sequence. Your transcript is ready below.`;
+                }
             } else {
-                audioNote = `Audio (TTS) is not available with the ${providerLabel} brain — it produces text only. Your transcript is ready below; switch Settings → AI Engine to Gemini to generate audio.`;
+                const providerLabel = settings.provider === 'ollama' ? 'Ollama' : 'Custom AI';
+                audioNote = `Audio (TTS) is not available with the ${providerLabel} brain — it produces text only. Your transcript is ready below; switch Settings → AI Engine to Gemini or FreeLLMAPI (MAGGI) to generate audio.`;
             }
             if (audioBase64) {
                 setGeneratedAudio(audioBase64);
             }
 
             // Format the script with color-coded blocks
-            const audioPlayerHtml = buildAudioPlayerHtml(audioBase64);
+            const audioPlayerHtml = buildAudioPlayerHtml(audioBase64, audioMimeType);
             const audioNoticeHtml = (!audioBase64 && audioNote) ? buildAudioNoticeHtml(audioNote) : '';
 
             code = buildPodcastDocumentHtml({
@@ -699,7 +779,7 @@ const App: React.FC = () => {
             });
 
             // Auto save generations to a history library for later retrieval, use, edit/delete.
-            // The transcript is saved even when audio is unavailable (e.g. a FreeLLMAPI brain).
+            // The transcript is saved even when audio is unavailable.
             {
                 let formatLabel = "Report Podcast";
                 if (toolId === 'podcast_2') formatLabel = "Dialogue Podcast";
@@ -715,7 +795,7 @@ const App: React.FC = () => {
                     id: `audio-${Date.now()}`,
                     type: 'audio',
                     name: filename,
-                    mimeType: 'audio/wav',
+                    mimeType: audioMimeType,
                     data: audioBase64 || '',
                     scriptHtml: code
                 };
@@ -914,14 +994,18 @@ const App: React.FC = () => {
           if (newScript.includes('Expert:') || newScript.includes(`${voiceSettings.expertLabel}:`)) speakers = 2;
           if (newScript.includes('Guest:') || newScript.includes(`${voiceSettings.guestLabel}:`)) speakers = 3;
           
-          const providerLabel = settings.provider === 'maggi' ? 'FreeLLMAPI (MAGGI)'
-              : settings.provider === 'ollama' ? 'Ollama'
-              : settings.provider === 'custom' ? 'Custom AI'
-              : 'Gemini';
           let audioBase64: string | null = null;
+          let audioMimeType = 'audio/wav';
           let audioNote = '';
-          if (settings.provider === 'gemini') {
-              const speechText = newScript.substring(0, 4000);
+          const cleanedRegen = (newScript || '')
+              .replace(/<\/?[a-zA-Z!/?][^>]*>/gm, ' ')
+              .replace(/[ \t]+/g, ' ')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim();
+          const speechText = (cleanedRegen || (newScript || '').trim()).substring(0, 4000).trim();
+          if (!speechText) {
+              audioNote = 'Podcast script text was empty — audio synthesis was skipped.';
+          } else if (settings.provider === 'gemini') {
               try {
                   audioBase64 = await generateSpeech(speechText, speakers, voiceSettings);
               } catch (speechErr) {
@@ -932,8 +1016,35 @@ const App: React.FC = () => {
               } else {
                   audioNote = 'Audio generation failed with the Gemini engine. Your transcript is ready below — you can retry audio from the player.';
               }
+          } else if (settings.provider === 'maggi') {
+              try {
+                  const maggiStore = getMaggiStore();
+                  await maggiStore.hydrate();
+                  const currentMaggiSettings = maggiStore.getSettings();
+                  const maggiResult = await generateMaggiSpeech(
+                      speechText,
+                      speakers,
+                      voiceSettings,
+                      currentMaggiSettings,
+                  );
+                  audioBase64 = maggiResult.audioBase64;
+                  audioMimeType = maggiResult.mimeType || 'audio/wav';
+                  if (
+                      maggiResult.fallbackUsed
+                      && maggiResult.assignedVoiceModel
+                      && !maggiResult.routedVia?.startsWith('server-gemini/')
+                      && maggiResult.assignedVoiceModel !== currentMaggiSettings.freeLlmVoiceModel
+                  ) {
+                      maggiStore.updateSettings({ freeLlmVoiceModel: maggiResult.assignedVoiceModel });
+                  }
+                  if (audioBase64) setGeneratedAudio(audioBase64);
+              } catch (speechErr: any) {
+                  console.warn('MAGGI TTS regeneration failed:', speechErr);
+                  audioNote = `FreeLLMAPI (MAGGI) voice synthesis failed (${speechErr?.message || 'unavailable'}). Check Settings → AI Engine → MAGGI → Podcast Voice / TTS Model or assign an available TTS next in sequence.`;
+              }
           } else {
-              audioNote = `Audio (TTS) is not available with the ${providerLabel} brain — it produces text only. Your transcript is ready below; switch Settings → AI Engine to Gemini to generate audio.`;
+              const providerLabel = settings.provider === 'ollama' ? 'Ollama' : 'Custom AI';
+              audioNote = `Audio (TTS) is not available with the ${providerLabel} brain — it produces text only. Your transcript is ready below; switch Settings → AI Engine to Gemini or FreeLLMAPI (MAGGI) to generate audio.`;
           }
 
           // 2. Update Preview Code (HTML)
@@ -942,7 +1053,7 @@ const App: React.FC = () => {
               voiceSettings,
               audioBase64,
               audioNoticeHtml: (!audioBase64 && audioNote) ? buildAudioNoticeHtml(audioNote) : '',
-              audioPlayerHtml: buildAudioPlayerHtml(audioBase64),
+              audioPlayerHtml: buildAudioPlayerHtml(audioBase64, audioMimeType),
           });
           setPreviewCode(code);
 
@@ -989,7 +1100,16 @@ const App: React.FC = () => {
       return (
           <div className="h-full w-full relative" data-theme={theme}>
               <StudioView 
-                  onBack={() => setViewMode('library')}
+                  onBack={() => { setStudioInitialTool(null); setViewMode('library'); }}
+                  initialTool={studioInitialTool}
+                  onClearInitialTool={() => setStudioInitialTool(null)}
+                  initialPodcastDraft={podcastDraftTrigger}
+                  onClearInitialPodcastDraft={() => setPodcastDraftTrigger(null)}
+                  audioProvider={settings.provider}
+                  onChangeAudioProvider={(provider) => {
+                      markExplicitAudioProvider();
+                      setSettings(prev => ({ ...prev, provider }));
+                  }}
                   voiceSettings={voiceSettings}
                   onUpdateVoiceSettings={setVoiceSettings}
                   onRunTool={handleToolAction}
@@ -1039,7 +1159,7 @@ const App: React.FC = () => {
                 currentTheme={theme}
                 onSetTheme={setTheme}
                 settings={settings}
-                onUpdateSettings={setSettings}
+                onUpdateSettings={handleSettingsUpdateFromPanel}
                 initialTab={activeSettingsTab}
                 voiceSettings={voiceSettings}
                 onUpdateVoiceSettings={setVoiceSettings}
@@ -1049,7 +1169,7 @@ const App: React.FC = () => {
                 onUpdateCastMember={updateCastMember}
                 onDeleteCastMember={deleteCastMember}
                 onResetLibrary={resetLibrary}
-                onOpenMaggi={() => { setIsSettingsOpen(false); setViewMode('maggi'); }}
+                onOpenMaggi={(tab = 'chat') => { setIsSettingsOpen(false); setMaggiInitialTab(tab); setViewMode('maggi'); }}
               />
           </div>
       );
@@ -1109,7 +1229,7 @@ const App: React.FC = () => {
                 currentTheme={theme}
                 onSetTheme={setTheme}
                 settings={settings}
-                onUpdateSettings={setSettings}
+                onUpdateSettings={handleSettingsUpdateFromPanel}
                 initialTab={activeSettingsTab}
                 voiceSettings={voiceSettings}
                 onUpdateVoiceSettings={setVoiceSettings}
@@ -1119,7 +1239,7 @@ const App: React.FC = () => {
                 onUpdateCastMember={updateCastMember}
                 onDeleteCastMember={deleteCastMember}
                 onResetLibrary={resetLibrary}
-                onOpenMaggi={() => { setIsSettingsOpen(false); setViewMode('maggi'); }}
+                onOpenMaggi={(tab = 'chat') => { setIsSettingsOpen(false); setMaggiInitialTab(tab); setViewMode('maggi'); }}
               />
           </div>
       );
@@ -1157,6 +1277,7 @@ const App: React.FC = () => {
           <div className="h-full w-full relative" data-theme={theme}>
               <MaggiView
                   onBack={() => setViewMode('library')}
+                  initialTab={maggiInitialTab}
                   workspaceName={activeSession?.name}
                   workspaceItems={(activeSession?.mediaItems ?? []).map((m) => ({
                       id: m.id,
@@ -1167,6 +1288,26 @@ const App: React.FC = () => {
                   }))}
                   onSaveToSession={(title, content) => {
                       addTextItem(title, content);
+                  }}
+                  onOpenPodcast={async () => {
+                      if (!hasExplicitAudioProvider) {
+                          const maggiStore = getMaggiStore();
+                          await maggiStore.hydrate();
+                          if (maggiStore.getSettings().provider !== 'freellmapi') {
+                              await maggiStore.updateSettings({ provider: 'freellmapi' });
+                          }
+                          setSettings(prev => ({ ...prev, provider: 'maggi' }));
+                      }
+                      try {
+                          const autoDraft = await loadAutoPodcastDraftFromStore(activeSession);
+                          if (autoDraft.draft) {
+                              setPodcastDraftTrigger({ text: autoDraft.draft, key: Date.now() });
+                          }
+                      } catch (err) {
+                          console.warn('Could not preload podcast sources:', err);
+                      }
+                      setStudioInitialTool('podcast_creator');
+                      setViewMode('studio');
                   }}
               />
           </div>
@@ -1221,7 +1362,7 @@ const App: React.FC = () => {
                   onOpenMedia={() => setViewMode('media')}
                   onOpenMIPrOMPT={() => setViewMode('miprompt')}
                   onOpenFinance={() => setViewMode('finance')}
-                  onOpenMaggi={() => setViewMode('maggi')}
+                  onOpenMaggi={() => { setMaggiInitialTab('chat'); setViewMode('maggi'); }}
                   onGenerateWebsite={handleGenerateSessionWebsite}
               />
               <SessionModal 
@@ -1237,7 +1378,7 @@ const App: React.FC = () => {
                 currentTheme={theme}
                 onSetTheme={setTheme}
                 settings={settings}
-                onUpdateSettings={setSettings}
+                onUpdateSettings={handleSettingsUpdateFromPanel}
                 initialTab={activeSettingsTab}
                 voiceSettings={voiceSettings}
                 onUpdateVoiceSettings={setVoiceSettings}
@@ -1247,7 +1388,7 @@ const App: React.FC = () => {
                 onUpdateCastMember={updateCastMember}
                 onDeleteCastMember={deleteCastMember}
                 onResetLibrary={resetLibrary}
-                onOpenMaggi={() => { setIsSettingsOpen(false); setViewMode('maggi'); }}
+                onOpenMaggi={(tab = 'chat') => { setIsSettingsOpen(false); setMaggiInitialTab(tab); setViewMode('maggi'); }}
               />
           </div>
       );
@@ -1396,6 +1537,10 @@ const App: React.FC = () => {
             onAddCharacter={addCharacter}
             onUpdateCharacter={updateCharacter}
             onDeleteCharacter={deleteCharacter}
+            castLibrary={castLibrary}
+            onAddCastMember={addCastMember}
+            onUpdateCastMember={updateCastMember}
+            onDeleteCastMember={deleteCastMember}
           />
         </div>
         
@@ -1433,6 +1578,8 @@ const App: React.FC = () => {
                 sessionDescription={activeSession.description}
                 onUpdateDescription={(desc) => updateSessionDescription(activeSession.id, desc)}
                 onOpenSettings={() => setIsSettingsOpen(true)}
+                provider={settings.provider}
+                onSwitchProvider={(provider) => setSettings(prev => ({ ...prev, provider }))}
                 onSaveToMaggi={async (msg: Message, queryText: string) => {
                   const store = getMaggiStore();
                   await store.saveQuery({
@@ -1560,6 +1707,10 @@ const App: React.FC = () => {
                    onAddCharacter={addCharacter}
                    onUpdateCharacter={updateCharacter}
                    onDeleteCharacter={deleteCharacter}
+                   castLibrary={castLibrary}
+                   onAddCastMember={addCastMember}
+                   onUpdateCastMember={updateCastMember}
+                   onDeleteCastMember={deleteCastMember}
                 />
              </div>
           </div>
@@ -1588,7 +1739,7 @@ const App: React.FC = () => {
         currentTheme={theme}
         onSetTheme={setTheme}
         settings={settings}
-        onUpdateSettings={setSettings}
+        onUpdateSettings={handleSettingsUpdateFromPanel}
         initialTab={activeSettingsTab}
         voiceSettings={voiceSettings}
         onUpdateVoiceSettings={setVoiceSettings}
@@ -1598,7 +1749,7 @@ const App: React.FC = () => {
         onUpdateCastMember={updateCastMember}
         onDeleteCastMember={deleteCastMember}
         onResetLibrary={resetLibrary}
-        onOpenMaggi={() => { setIsSettingsOpen(false); setViewMode('maggi'); }}
+        onOpenMaggi={(tab = 'chat') => { setIsSettingsOpen(false); setMaggiInitialTab(tab); setViewMode('maggi'); }}
       />
     </div>
   );

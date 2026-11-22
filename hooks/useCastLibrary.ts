@@ -16,7 +16,7 @@ const DEFAULT_CAST_MEMBERS: CastMember[] = [
   {
     id: 'sys-expert-1',
     name: 'Dr. Insight',
-    voice: 'Zephyr',
+    voice: 'Puck',
     bio: 'A knowledgeable and articulate voice, ideal for explaining intricate details and offering expert opinions.',
     avatar: 'https://picsum.photos/seed/expert/60/60',
     category: 'system',
@@ -25,11 +25,11 @@ const DEFAULT_CAST_MEMBERS: CastMember[] = [
   {
     id: 'sys-guest-1',
     name: 'Curious Listener',
-    voice: 'Puck',
+    voice: 'Zephyr',
     bio: 'An engaging and inquisitive voice, representing the audience and asking clarifying questions.',
     avatar: 'https://picsum.photos/seed/listener/60/60',
     category: 'system',
-    gender: 'Male',
+    gender: 'Female',
   },
   {
     id: 'sys-host-sv-1',
@@ -78,20 +78,49 @@ const DEFAULT_CAST_MEMBERS: CastMember[] = [
   },
 ];
 
+const CAST_LIBRARY_ASSET_URL = '/assets/aistudio/cast_library_5e085b7b.json';
+
+const mergeWithUserCast = (baseCast: CastMember[]): CastMember[] => {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (!stored) return baseCast;
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return baseCast;
+    const userCastMembers = parsed.filter((cm: CastMember) => cm && cm.category === 'user');
+    return [...baseCast, ...userCastMembers];
+  } catch (e) {
+    console.error("Failed to load cast members", e);
+    return baseCast;
+  }
+};
+
 export const useCastLibrary = () => {
-  const [castMembers, setCastMembers] = useState<CastMember[]>(DEFAULT_CAST_MEMBERS);
+  const [systemCastMembers, setSystemCastMembers] = useState<CastMember[]>(DEFAULT_CAST_MEMBERS);
+  const [castMembers, setCastMembers] = useState<CastMember[]>(() => mergeWithUserCast(DEFAULT_CAST_MEMBERS));
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        const userCastMembers = parsed.filter((cm: CastMember) => cm.category === 'user');
-        setCastMembers([...DEFAULT_CAST_MEMBERS, ...userCastMembers]);
-      } catch (e) {
-        console.error("Failed to load cast members", e);
-      }
-    }
+    let cancelled = false;
+    setCastMembers(mergeWithUserCast(DEFAULT_CAST_MEMBERS));
+
+    fetch(CAST_LIBRARY_ASSET_URL)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data) || data.length === 0) return;
+        const validBase = data.filter(
+          (item: any): item is CastMember =>
+            item && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.voice === 'string',
+        );
+        if (validBase.length === 0) return;
+        setSystemCastMembers(validBase);
+        setCastMembers(mergeWithUserCast(validBase));
+      })
+      .catch(() => {
+        // Offline or test fallback already populated via DEFAULT_CAST_MEMBERS
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const saveToStorage = (newCastMembers: CastMember[]) => {
@@ -125,7 +154,7 @@ export const useCastLibrary = () => {
   };
 
   const resetLibrary = () => {
-    setCastMembers(DEFAULT_CAST_MEMBERS);
+    setCastMembers(systemCastMembers);
     localStorage.removeItem(STORAGE_KEY);
   };
 

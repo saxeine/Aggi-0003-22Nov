@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { VoiceSettings } from '../types';
 import ArtifactPreview from './ArtifactPreview';
 import { useLanguage } from '../contexts/LanguageContext';
-import { PodcastFormatId, PodcastRole, requiredRolesFor } from '../utils/podcastGating';
+import { PodcastFormatId, PodcastRole, computePodcastGate } from '../utils/podcastGating';
 
 interface PodcastResultViewProps {
   previewCode: string;
@@ -47,20 +47,23 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
   const [isEditingScript, setIsEditingScript] = useState(false);
   const [scriptContent, setScriptContent] = useState('');
 
-  const configuredRoles = (['host', 'expert', 'guest'] as const).filter(r => touchedRoles.includes(r));
-  const hostConfigured = touchedRoles.includes('host');
-  const multipleConfigured = configuredRoles.length > 1;
   const currentFormat = (activeFormat ?? 'podcast_1') as PodcastFormatId;
-  const hostOnlyActive = multipleConfigured || requiredRolesFor(currentFormat).some(r => !configuredRoles.includes(r));
+  const { hostOnly: hostOnlyActive, hostConfigured } = computePodcastGate({
+    touchedRoles,
+    activeFormat: currentFormat,
+    contentReady: true,
+    isLoading: false,
+  });
+  const audioMimeType = generatedAudio?.startsWith('UklGR') ? 'audio/wav' : 'audio/mpeg';
 
   useEffect(() => {
     if (generatedAudio && audioRef.current) {
-      audioRef.current.src = `data:audio/wav;base64,${generatedAudio}`;
+      audioRef.current.src = `data:${audioMimeType};base64,${generatedAudio}`;
       audioRef.current.load();
       audioRef.current.volume = volume;
       audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     }
-  }, [generatedAudio]);
+  }, [generatedAudio, audioMimeType]);
 
   const togglePlay = () => {
     if (!audioRef.current) return;
@@ -114,8 +117,8 @@ const PodcastResultView: React.FC<PodcastResultViewProps> = ({
   const confirmDownload = () => {
     if (!generatedAudio) return;
     const link = document.createElement('a');
-    link.href = `data:audio/wav;base64,${generatedAudio}`;
-    link.download = `${saveFilename}.wav`;
+    link.href = `data:${audioMimeType};base64,${generatedAudio}`;
+    link.download = `${saveFilename}.${audioMimeType === 'audio/wav' ? 'wav' : 'mp3'}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

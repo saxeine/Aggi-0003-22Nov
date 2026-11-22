@@ -2,9 +2,20 @@ import { describe, it, expect } from 'vitest';
 import {
   computePodcastGate,
   requiredRolesFor,
+  buildStaggeredDefaultVoiceSettings,
   type PodcastRole,
-  type PodcastFormatId,
 } from '../utils/podcastGating';
+import type { VoiceSettings } from '../types';
+
+const baseVoice: VoiceSettings = {
+  host: '',
+  hostLabel: '',
+  expert: '',
+  expertLabel: '',
+  guest: '',
+  guestLabel: '',
+  language: 'English',
+};
 
 describe('requiredRolesFor', () => {
   it('Solo needs only the host', () => {
@@ -77,19 +88,39 @@ describe('computePodcastGate', () => {
     expect(gate.gateHint).toBe('');
   });
 
-  it('uses ONLY the host (position one) when more than one speaker is configured, even for Duo/Roundtable', () => {
-    for (const format of ['podcast_1', 'podcast_2', 'podcast_3'] as PodcastFormatId[]) {
-      const gate = computePodcastGate({
-        touchedRoles: ['host', 'expert'],
-        activeFormat: format,
-        contentReady: true,
-        isLoading: false,
-      });
-      expect(gate.multipleConfigured).toBe(true);
-      expect(gate.hostOnly).toBe(true);
-      expect(gate.speakerCount).toBe(1);
-      expect(gate.canGenerate).toBe(true);
-    }
+  it('uses ONLY the host (position one) for Solo/Report when multiple speakers are configured', () => {
+    const gate = computePodcastGate({
+      touchedRoles: ['host', 'expert', 'guest'],
+      activeFormat: 'podcast_1',
+      contentReady: true,
+      isLoading: false,
+    });
+    expect(gate.multipleConfigured).toBe(true);
+    expect(gate.hostOnly).toBe(true);
+    expect(gate.speakerCount).toBe(1);
+    expect(gate.canGenerate).toBe(true);
+  });
+
+  it('allows 2 speakers for Duo and 3 speakers for Roundtable when required roles are configured', () => {
+    const duo = computePodcastGate({
+      touchedRoles: ['host', 'expert', 'guest'],
+      activeFormat: 'podcast_2',
+      contentReady: true,
+      isLoading: false,
+    });
+    expect(duo.hostOnly).toBe(false);
+    expect(duo.speakerCount).toBe(2);
+    expect(duo.canGenerate).toBe(true);
+
+    const roundtable = computePodcastGate({
+      touchedRoles: ['host', 'expert', 'guest'],
+      activeFormat: 'podcast_3',
+      contentReady: true,
+      isLoading: false,
+    });
+    expect(roundtable.hostOnly).toBe(false);
+    expect(roundtable.speakerCount).toBe(3);
+    expect(roundtable.canGenerate).toBe(true);
   });
 
   it('is host-only when a format needs a speaker that is not configured', () => {
@@ -105,18 +136,6 @@ describe('computePodcastGate', () => {
     expect(gate.canGenerate).toBe(true);
   });
 
-  it('honours Duo only when host+expert are configured and only host is configured *for the report* — otherwise host-only', () => {
-    // Two speakers configured -> report is host-only per spec.
-    const duo = computePodcastGate({
-      touchedRoles: ['host', 'expert'],
-      activeFormat: 'podcast_2',
-      contentReady: true,
-      isLoading: false,
-    });
-    expect(duo.hostOnly).toBe(true);
-    expect(duo.speakerCount).toBe(1);
-  });
-
   it('handles no roles configured', () => {
     const gate = computePodcastGate({
       touchedRoles: [],
@@ -129,3 +148,30 @@ describe('computePodcastGate', () => {
     expect(gate.configuredRoles).toEqual([]);
   });
 });
+
+describe('buildStaggeredDefaultVoiceSettings', () => {
+  it('inserts 3 staggered Female -> Male -> Female defaults for English', () => {
+    const res = buildStaggeredDefaultVoiceSettings({ ...baseVoice, language: 'English' });
+    expect(res.touchedRoles).toEqual(['host', 'expert', 'guest']);
+    // Kore (Female), Puck (Male), Zephyr (Female)
+    expect(res.voiceSettings.host).toBe('Kore');
+    expect(res.voiceSettings.expert).toBe('Puck');
+    expect(res.voiceSettings.guest).toBe('Zephyr');
+    expect(res.voiceSettings.hostMemberId).toBe('sys-host-1');
+    expect(res.voiceSettings.expertMemberId).toBe('sys-expert-1');
+    expect(res.voiceSettings.guestMemberId).toBe('sys-guest-1');
+  });
+
+  it('inserts 3 staggered Male -> Female -> Male defaults for Swedish', () => {
+    const res = buildStaggeredDefaultVoiceSettings({ ...baseVoice, language: 'Swedish' });
+    expect(res.touchedRoles).toEqual(['host', 'expert', 'guest']);
+    // Fenrir (Male), Zephyr (Female), Puck (Male)
+    expect(res.voiceSettings.host).toBe('Fenrir');
+    expect(res.voiceSettings.expert).toBe('Zephyr');
+    expect(res.voiceSettings.guest).toBe('Puck');
+    expect(res.voiceSettings.hostMemberId).toBe('sys-host-sv-1');
+    expect(res.voiceSettings.expertMemberId).toBe('sys-expert-sv-1');
+    expect(res.voiceSettings.guestMemberId).toBe('sys-oskar-sv-1');
+  });
+});
+

@@ -1,7 +1,7 @@
 import ToolOrderSettingsModal from './ToolOrderSettingsModal';
 import PodcastCreator from './PodcastCreator';
 import PodcastResultView from './PodcastResultView';
-import { computePodcastGate, PodcastRole } from '../utils/podcastGating';
+import { computePodcastGate, buildStaggeredDefaultVoiceSettings, PodcastRole } from '../utils/podcastGating';
 import React, { useState, useEffect } from 'react';
 import { VoiceSettings, Session, MediaItem, PromptTemplate, CastMember } from '../types';
 import PromptLibraryModal from './PromptLibraryModal';
@@ -1473,6 +1473,7 @@ You MUST return ONLY a valid raw JSON object matching the following TypeScript s
                   onRunTool={onRunTool}
                   isLoading={isLoading}
                   hasActiveSession={hasActiveSession}
+                  session={session}
                   castLibrary={castLibrary}
                   setIsCastLibraryOpen={setIsCastLibraryOpen}
                   activeFormat={activeFormat}
@@ -2532,17 +2533,10 @@ You MUST return ONLY a valid raw JSON object matching the following TypeScript s
                 castLibrary={castLibrary}
                 voiceSettings={voiceSettings}
                 onResetVoiceSettings={() => {
-                    setTouchedRoles(['host']);
-                    onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        host: 'Kore',
-                        hostLabel: 'Narrator Bot',
-                        hostBio: 'A clear, authoritative, and friendly voice, perfect for hosting and guiding the listener through complex topics.',
-                        hostAvatar: 'https://picsum.photos/seed/narrator/60/60',
-                        hostMemberId: 'sys-host-1',
-                        expertMemberId: undefined,
-                        guestMemberId: undefined
-                    });
+                    const { voiceSettings: nextVoiceSettings, touchedRoles: nextTouched } =
+                      buildStaggeredDefaultVoiceSettings(voiceSettings, castLibrary);
+                    setTouchedRoles(nextTouched);
+                    onUpdateVoiceSettings(nextVoiceSettings);
                 }}
                 onAssignRole={(role, member) => {
                     const updates: Partial<VoiceSettings> = {};

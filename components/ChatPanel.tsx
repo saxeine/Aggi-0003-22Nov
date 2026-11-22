@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { Message, PromptTemplate, MediaItem } from '../types';
+import { Message, PromptTemplate, MediaItem, ThemeSettings } from '../types';
 import PromptLibraryModal from './PromptLibraryModal';
 import { useLanguage } from '../contexts/LanguageContext';
 import ReactMarkdown from 'react-markdown';
@@ -41,6 +41,8 @@ interface ChatPanelProps {
   onEditMessage?: (id: string, newContent: string) => void;
   onOpenSettings?: () => void;
   onSaveToMaggi?: (msg: Message, queryText: string) => Promise<void> | void;
+  provider?: ThemeSettings['provider'];
+  onSwitchProvider?: (provider: 'gemini' | 'ollama') => void;
 }
 
 const ChatPanel: React.FC<ChatPanelProps> = ({ 
@@ -76,7 +78,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   onDownloadSession,
   onEditMessage,
   onOpenSettings,
-  onSaveToMaggi
+  onSaveToMaggi,
+  provider = 'gemini',
+  onSwitchProvider
 }) => {
   const { t } = useLanguage();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -540,6 +544,19 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
               <button onClick={onOpenAudio} className="p-2 text-red-500 hover:text-red-400 rounded hover:bg-app-card transition-colors" title={t('chat.audioOverview')}>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" /></svg>
               </button>
+              {onSwitchProvider && (
+                <button
+                  type="button"
+                  onClick={() => onSwitchProvider(provider === 'ollama' ? 'gemini' : 'ollama')}
+                  className="mx-1 self-center flex items-center gap-0.5 rounded-md border border-app-border bg-app-bg/90 px-2 py-1 text-[10px] font-bold tracking-wider transition-all hover:border-app-text/50"
+                  aria-label="FL/GM model switch"
+                  title={`FL/GM: ${provider === 'ollama' ? 'Local LLM active — click to switch to Gemini' : provider === 'gemini' ? 'Gemini active — click to switch to Local LLM' : `${provider.toUpperCase()} active — click to switch to Local LLM`}`}
+                >
+                  <span className={provider === 'ollama' ? 'text-emerald-400 font-black' : 'text-app-dim'}>FL</span>
+                  <span className="text-app-dim/50">/</span>
+                  <span className={provider === 'gemini' ? 'text-blue-400 font-black' : 'text-app-dim'}>GM</span>
+                </button>
+              )}
               <button onClick={onToggleMindMap} className={`p-2 text-purple-500 hover:text-purple-400 rounded hover:bg-app-card transition-colors ${isMindMapLoading ? 'animate-pulse' : ''}`} title={t('chat.mindMapView')}>
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z" /></svg>
               </button>

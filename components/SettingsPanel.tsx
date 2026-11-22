@@ -31,7 +31,7 @@ interface SettingsPanelProps {
   onUpdateCastMember?: (id: string, m: Partial<CastMember>) => void;
   onDeleteCastMember?: (id: string) => void;
   onResetLibrary?: () => void;
-  onOpenMaggi?: () => void;
+  onOpenMaggi?: (tab?: 'chat' | 'sources' | 'saved' | 'defaults' | 'settings') => void;
   onTouchRole?: (role: 'host' | 'expert' | 'guest') => void;
 }
 
@@ -583,13 +583,22 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                           </p>
                         </div>
                         {onOpenMaggi && (
-                          <button
-                            type="button"
-                            onClick={onOpenMaggi}
-                            className="shrink-0 rounded-lg bg-emerald-500 px-3 py-1.5 text-[11px] font-bold text-black hover:bg-emerald-400 transition-colors"
-                          >
-                            Open Full MAGGI Workspace →
-                          </button>
+                          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => onOpenMaggi('defaults')}
+                              className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/25 transition-colors"
+                            >
+                              🔑 Edit Defaults Page
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onOpenMaggi('chat')}
+                              className="rounded-lg bg-emerald-500 px-3 py-1.5 text-[11px] font-bold text-black hover:bg-emerald-400 transition-colors"
+                            >
+                              Open Full MAGGI Workspace →
+                            </button>
+                          </div>
                         )}
                       </div>
 
@@ -635,6 +644,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         settings={maggiConfig}
                         onChange={(patch) => setMaggiConfig(maggiStore.updateSettings(patch))}
                         onReset={() => setMaggiConfig(maggiStore.updateSettings({ ...DEFAULT_MAGGI_SETTINGS }))}
+                        onOpenDefaults={onOpenMaggi ? () => onOpenMaggi('defaults') : undefined}
                       />
                     </div>
                   </div>

@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { CastMember, VoiceSettings } from '../types';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { CastMember, Session, ThemeSettings, VoiceSettings } from '../types';
 import { useLanguage } from '../contexts/LanguageContext';
-import { computePodcastGate, requiredRolesFor } from '../utils/podcastGating';
+import { computePodcastGate, requiredRolesFor, buildStaggeredDefaultVoiceSettings } from '../utils/podcastGating';
+import { AutoPodcastDraftResult, loadAutoPodcastDraftFromStore } from '../utils/podcastSources';
 
 type FormatId = 'podcast_1' | 'podcast_2' | 'podcast_3';
 type Role = 'host' | 'expert' | 'guest';
@@ -13,6 +14,8 @@ interface PodcastCreatorProps {
   onRunTool: (toolId: string, payload?: any) => void;
   isLoading: boolean;
   hasActiveSession: boolean;
+  session?: Session | null;
+  draftRevision?: number;
   castLibrary: CastMember[];
   setIsCastLibraryOpen: (isOpen: boolean) => void;
   activeFormat: FormatId | null;
@@ -27,6 +30,8 @@ interface PodcastCreatorProps {
   onChangeCustomInput?: (value: string) => void;
   includeSessionData?: boolean;
   onChangeIncludeSessionData?: (value: boolean) => void;
+  audioProvider?: ThemeSettings['provider'];
+  onChangeAudioProvider?: (provider: 'maggi' | 'gemini') => void;
 }
 
 const STANDARD_NAMES = ['Sax', 'Chameleon', 'The Pinpoint', 'Lars', 'Elena', 'Astrid', 'Oskar', 'Freja', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr', 'Aoede', 'Narrator Bot', 'Dr. Insight', 'Curious Listener'];
@@ -47,7 +52,7 @@ const defaultCastMemberFor = (role: Role, castLibrary: CastMember[], language: s
     ? (sv ? ['sys-host-sv-1', 'sys-host-1'] : ['sys-host-1', 'sys-host-sv-1'])
     : role === 'expert'
       ? (sv ? ['sys-expert-sv-1', 'sys-expert-1'] : ['sys-expert-1', 'sys-expert-sv-1'])
-      : (sv ? ['sys-freja-sv-1', 'sys-guest-1'] : ['sys-guest-1', 'sys-freja-sv-1']);
+      : (sv ? ['sys-oskar-sv-1', 'sys-guest-1'] : ['sys-guest-1', 'sys-oskar-sv-1']);
   for (const id of candidates) {
     const member = castLibrary.find(m => m.id === id);
     if (member) return member;
@@ -66,6 +71,8 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
   onRunTool,
   isLoading,
   hasActiveSession,
+  session,
+  draftRevision,
   castLibrary,
   setIsCastLibraryOpen,
   activeFormat,
@@ -78,6 +85,8 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
   onChangeCustomInput,
   includeSessionData,
   onChangeIncludeSessionData,
+  audioProvider,
+  onChangeAudioProvider,
 }) => {
   const { t } = useLanguage();
 
@@ -88,6 +97,12 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
   const setPodcastCustomInput = onChangeCustomInput || setLocalCustomInput;
   const podcastIncludeSessionData = includeSessionData !== undefined ? includeSessionData : localIncludeSessionData;
   const setPodcastIncludeSessionData = onChangeIncludeSessionData || setLocalIncludeSessionData;
+
+  const [sourceSummary, setSourceSummary] = useState<AutoPodcastDraftResult | null>(null);
+  const [isLoadingSources, setIsLoadingSources] = useState(false);
+  const userEditedInputRef = useRef(false);
+  const lastAutoInsertedRef = useRef('');
+  const lastDraftRevisionRef = useRef<number | undefined>(draftRevision);
 
   const [selectedHostCastMemberId, setSelectedHostCastMemberId] = useState<string | null>(null);
   const [selectedExpertCastMemberId, setSelectedExpertCastMemberId] = useState<string | null>(null);
@@ -109,6 +124,41 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
   useEffect(() => {
     setPodcastIncludeSessionData(hasActiveSession);
   }, [hasActiveSession]);
+
+  const syncSourcesIntoInput = useCallback(async (forceReplace = false) => {
+    setIsLoadingSources(true);
+    try {
+      const result = await loadAutoPodcastDraftFromStore(session);
+      setSourceSummary(result);
+      if (result.draft) {
+        const shouldInsert =
+          forceReplace ||
+          (!userEditedInputRef.current &&
+            (!podcastCustomInput.trim() || podcastCustomInput === lastAutoInsertedRef.current));
+        if (shouldInsert) {
+          userEditedInputRef.current = false;
+          lastAutoInsertedRef.current = result.draft;
+          setPodcastCustomInput(result.draft);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to auto-load session & MAGGI contents:', err);
+    } finally {
+      setIsLoadingSources(false);
+    }
+  }, [session, podcastCustomInput, setPodcastCustomInput]);
+
+  useEffect(() => {
+    if (draftRevision && draftRevision !== lastDraftRevisionRef.current) {
+      lastDraftRevisionRef.current = draftRevision;
+      userEditedInputRef.current = false;
+      lastAutoInsertedRef.current = podcastCustomInput;
+    }
+  }, [draftRevision, podcastCustomInput]);
+
+  useEffect(() => {
+    void syncSourcesIntoInput(false);
+  }, [session?.id, session?.mediaItems.length, session?.selectedMediaIds.length, draftRevision]);
 
   // Sync selection state with voice settings. Only roles the user actually
   // configured are re-synced; unconfigured roles keep their empty selection.
@@ -217,26 +267,16 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
   };
 
   const handleUseDefault = () => {
-    // "Use default" applies the default host cast for the current language and
-    // configures ONLY the host (position one). The expert and guest cards are
-    // intentionally left unconfigured so the report stays a single-host report.
-    const host = defaultCastMemberFor('host', castLibrary, voiceSettings.language);
-    if (!host) return;
+    // "Use default" inserts default characters for the first 3 slots
+    // (host, expert, guest), staggered between Male and Female voices.
+    const { voiceSettings: nextVoiceSettings, touchedRoles: nextTouched, selectedIds } =
+      buildStaggeredDefaultVoiceSettings(voiceSettings, castLibrary);
 
-    onUpdateVoiceSettings({
-      ...voiceSettings,
-      host: host.voice,
-      hostLabel: host.name,
-      hostAvatar: host.avatar,
-      hostBio: host.bio,
-      hostMemberId: host.id,
-      expertMemberId: undefined,
-      guestMemberId: undefined,
-    });
-    setSelectedHostCastMemberId(host.id);
-    setSelectedExpertCastMemberId(null);
-    setSelectedGuestCastMemberId(null);
-    setTouchedRoles(['host']);
+    onUpdateVoiceSettings(nextVoiceSettings);
+    setSelectedHostCastMemberId(selectedIds.host);
+    setSelectedExpertCastMemberId(selectedIds.expert);
+    setSelectedGuestCastMemberId(selectedIds.guest);
+    setTouchedRoles(nextTouched);
   };
 
   // --- Gate: no podcast is produced until the cast is configured or the user presses "Use Default" ---
@@ -461,7 +501,7 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
                 <button
                   onClick={handleUseDefault}
                   className="px-2 py-1 bg-emerald-500/10 border border-emerald-500/30 rounded text-[10px] font-bold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
-                  title="Use the default host cast (position one) for this language"
+                  title="Insert staggered Male/Female default characters into Host, Expert, and Guest"
                 >
                   {t('studio.useDefault')}
                 </button>
@@ -571,12 +611,12 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
                 );
               })}
             </div>
-            {multipleConfigured && (
+            {activeFormat === 'podcast_1' && multipleConfigured && (
               <div className="text-[10px] text-teal-400 bg-teal-500/10 border border-teal-500/30 rounded-lg px-3 py-2">
                 {t('studio.soloUsesHostOnly')}
               </div>
             )}
-            {!multipleConfigured && missingRoles.length > 0 && (
+            {missingRoles.length > 0 && (
               <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
                 {t('studio.missingRolesTip').replace('{roles}', missingRoles.map(r => r[0].toUpperCase() + r.slice(1)).join(' + '))}
               </div>
@@ -588,8 +628,8 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
       {/* Preview / Action Area */}
       <div className="flex flex-col gap-6">
         {/* Standalone Content Input Section */}
-        <div className="bg-app-card rounded-xl border border-app-border p-5 text-left space-y-4 shadow-sm">
-          <div className="flex items-center justify-between">
+        <div className="bg-app-card rounded-xl border border-app-border p-5 text-left space-y-3 shadow-sm">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <h3 className="text-sm font-bold text-app-text flex items-center gap-2 uppercase tracking-wider">
               <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -613,11 +653,59 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
             )}
           </div>
 
+          <div className="flex items-center justify-between gap-2 flex-wrap text-[10px]">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {sourceSummary?.hasSessionContent && (
+                <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/30 font-semibold">
+                  Session ({sourceSummary.sessionCount})
+                </span>
+              )}
+              {sourceSummary?.hasMaggiContent && (
+                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-semibold">
+                  MAGGI ({[
+                    sourceSummary.maggiDocCount > 0 ? `${sourceSummary.maggiDocCount} docs` : '',
+                    sourceSummary.maggiQueryCount > 0 ? `${sourceSummary.maggiQueryCount} saved` : '',
+                    sourceSummary.maggiChatCount > 0 ? `${sourceSummary.maggiChatCount} chat` : '',
+                  ].filter(Boolean).join(' · ')})
+                </span>
+              )}
+              {!isLoadingSources && !sourceSummary?.hasSessionContent && !sourceSummary?.hasMaggiContent && (
+                <span className="text-app-dim">No session or MAGGI sources found yet</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void syncSourcesIntoInput(true)}
+                disabled={isLoadingSources}
+                className="px-2 py-0.5 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 font-semibold transition-colors disabled:opacity-50"
+                title="Reload active Session and MAGGI contents into the input box"
+              >
+                {isLoadingSources ? 'Loading...' : '↻ Load Session & MAGGI'}
+              </button>
+              {podcastCustomInput.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    userEditedInputRef.current = true;
+                    setPodcastCustomInput('');
+                  }}
+                  className="px-2 py-0.5 rounded bg-app-bg hover:bg-red-500/10 border border-app-border hover:border-red-500/30 text-app-dim hover:text-red-300 font-semibold transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="space-y-1">
             <textarea
               value={podcastCustomInput}
-              onChange={(e) => setPodcastCustomInput(e.target.value)}
-              placeholder="What should the hosts discuss? Type a topic, list of questions, talking points, or copy-paste text here..."
+              onChange={(e) => {
+                userEditedInputRef.current = true;
+                setPodcastCustomInput(e.target.value);
+              }}
+              placeholder="What should the hosts discuss? Session and MAGGI contents are auto-inserted here when available, or type your own topic..."
               className="w-full bg-zinc-950/60 border border-app-border rounded-lg p-3 text-xs text-app-text focus:outline-none focus:border-purple-500/80 resize-none h-44 placeholder-white/20 shadow-inner"
             />
             <div className="flex justify-between items-center text-[10px] text-app-dim">
@@ -634,9 +722,44 @@ const PodcastCreator: React.FC<PodcastCreatorProps> = ({
             </svg>
           </div>
           <h3 className="text-lg font-bold text-app-text mb-1">{t('studio.readyToGenerate')}</h3>
-          <p className="text-app-dim text-xs mb-6 max-w-xs">
+          <p className="text-app-dim text-xs mb-4 max-w-xs">
             {t('studio.readyToGenerateDesc')}
           </p>
+
+          {audioProvider && onChangeAudioProvider && (
+            <div className="mb-5 flex items-center gap-2 rounded-lg border border-app-border bg-app-panel px-2.5 py-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-app-dim">Audio Engine:</span>
+              <button
+                type="button"
+                onClick={() => onChangeAudioProvider('maggi')}
+                className={`rounded px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                  audioProvider === 'maggi'
+                    ? 'bg-emerald-500 text-black shadow-sm'
+                    : 'text-app-dim hover:text-app-text'
+                }`}
+                title="Use FreeLLMAPI (MAGGI) audio resources"
+              >
+                FreeLLMAPI
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeAudioProvider('gemini')}
+                className={`rounded px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                  audioProvider === 'gemini'
+                    ? 'bg-blue-500 text-white shadow-sm'
+                    : 'text-app-dim hover:text-app-text'
+                }`}
+                title="Use Gemini audio resources"
+              >
+                Gemini
+              </button>
+              {audioProvider !== 'maggi' && audioProvider !== 'gemini' && (
+                <span className="text-[9px] font-semibold text-amber-400 uppercase">
+                  ({audioProvider})
+                </span>
+              )}
+            </div>
+          )}
 
           <button
             onClick={handleGenerate}

@@ -7,6 +7,7 @@ interface Props {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
   onReset: () => void;
+  onOpenDefaults?: () => void;
 }
 
 const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
@@ -78,9 +79,17 @@ const parseFreeLlmKeysPayload = (rawText: string): FreeLlmKeyEntry[] => {
   return cleaned;
 };
 
-const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) => {
+const KEYPOOL_TTS_SUGGESTIONS: Record<string, string[]> = {
+  google: ['google:gemini-3.8-flash-tts', 'google:gemini-3.8-flash-lite-tts'],
+  openai: ['openai:gpt-4o-mini-tts', 'openai:tts-1'],
+  groq: ['groq:playai-tts', 'groq:canopylabs/orpheus-v1-english'],
+  cloudflare: ['cloudflare:@cf/myshell-ai/melotts'],
+  together: ['together:cartesia/sonic'],
+};
+
+const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset, onOpenDefaults }) => {
   const [section, setSection] = useState<Section>('brain');
-  const [probe, setProbe] = useState<{ ok: boolean; detail: string; models?: string[] } | null>(null);
+  const [probe, setProbe] = useState<{ ok: boolean; detail: string; models?: string[]; voiceModels?: string[] } | null>(null);
   const [probing, setProbing] = useState(false);
   const [showJsonPaste, setShowJsonPaste] = useState(false);
   const [jsonInput, setJsonInput] = useState('');
@@ -93,10 +102,11 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
       onChange({
         provider: 'freellmapi',
         freeLlmMode: 'keypool',
+        freeLlmOverwriteDefaults: true,
         freeLlmKeys: entries,
       });
       const platforms = Array.from(new Set(entries.map((e) => e.platform))).join(', ');
-      setImportStatus({ ok: true, text: `Imported ${entries.length} keys (${platforms}). Click "Test connection" below.` });
+      setImportStatus({ ok: true, text: `Imported ${entries.length} keys (${platforms}) — overwriting defaults. Click "Test connection" below.` });
       setJsonInput('');
       setShowJsonPaste(false);
       setProbe(null);
@@ -134,6 +144,31 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
     } finally {
       setProbing(false);
     }
+  };
+
+  const keyPoolPlatformsForVoice = settings.freeLlmMode === 'keypool'
+    ? (
+      (settings.freeLlmKeys || []).length > 0
+        ? (settings.freeLlmKeys || []).filter((k) => k.enabled !== false).map((k) => k.platform.toLowerCase())
+        : ['google', 'groq', 'cloudflare']
+    )
+    : [];
+
+  const suggestedVoiceModels = Array.from(
+    new Set<string>([
+      ...(probe?.voiceModels ?? []),
+      ...(settings.freeLlmMode === 'keypool'
+        ? keyPoolPlatformsForVoice.flatMap((plat) => KEYPOOL_TTS_SUGGESTIONS[plat] ?? [])
+        : ['tts-1', 'gpt-4o-mini-tts', 'tts-1-hd']),
+    ]),
+  ).filter((m) => m && m !== 'auto');
+
+  const assignNextVoiceInSequence = () => {
+    if (!suggestedVoiceModels.length) return;
+    const current = (settings.freeLlmVoiceModel || 'auto').trim();
+    const currentIdx = suggestedVoiceModels.indexOf(current);
+    const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % suggestedVoiceModels.length : 0;
+    onChange({ freeLlmVoiceModel: suggestedVoiceModels[nextIdx] });
   };
 
   return (
@@ -223,17 +258,26 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
                     >
                       {showJsonPaste ? 'Hide JSON paste' : 'Paste JSON'}
                     </button>
-                    {(settings.freeLlmKeys?.length || 0) > 0 && (
+                    {onOpenDefaults && (
+                      <button
+                        type="button"
+                        onClick={onOpenDefaults}
+                        className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+                      >
+                        🔑 Edit Defaults Page →
+                      </button>
+                    )}
+                    {((settings.freeLlmKeys?.length || 0) > 0 || settings.freeLlmOverwriteDefaults) && (
                       <button
                         type="button"
                         onClick={() => {
-                          onChange({ freeLlmKeys: [] });
+                          onChange({ freeLlmKeys: [], freeLlmOverwriteDefaults: false });
                           setImportStatus(null);
                           setProbe(null);
                         }}
-                        className="ml-auto rounded-lg border border-app-border px-2 py-1.5 text-[10px] font-bold text-app-dim hover:text-red-400 hover:border-red-400/40"
+                        className="ml-auto rounded-lg border border-app-border px-2 py-1.5 text-[10px] font-bold text-app-dim hover:text-amber-300 hover:border-amber-400/40"
                       >
-                        Clear keys
+                        Restore env defaults
                       </button>
                     )}
                   </div>
@@ -302,6 +346,45 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
                       placeholder="auto"
                     />
                   </Field>
+
+                  <Field
+                    label="Podcast Voice / TTS Model"
+                    hint={'Used to synthesize podcast audio when AI Engine is MAGGI. Leave "auto" or assign a specific model; if synthesis fails, FreeLLMAPI automatically steps to the next available TTS in sequence.'}
+                  >
+                    <div className="flex gap-1.5">
+                      <TextInput
+                        value={settings.freeLlmVoiceModel ?? 'auto'}
+                        onChange={(e) => onChange({ freeLlmVoiceModel: e.target.value.trim() })}
+                        placeholder="auto"
+                      />
+                      {suggestedVoiceModels.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={assignNextVoiceInSequence}
+                          className="shrink-0 rounded-lg bg-emerald-500/20 border border-emerald-500/40 px-2.5 py-1 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/30 transition-colors"
+                          title="Assign the next available TTS model in sequence"
+                        >
+                          Assign next TTS
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {['auto', ...suggestedVoiceModels.slice(0, 8)].map((vm) => {
+                        const active = (settings.freeLlmVoiceModel || 'auto') === vm;
+                        return (
+                          <button
+                            key={vm}
+                            type="button"
+                            onClick={() => onChange({ freeLlmVoiceModel: vm })}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-mono transition-colors ${active ? 'bg-emerald-500 text-black font-bold' : 'bg-app-bg border border-app-border text-app-dim hover:text-app-text'}`}
+                            title="Assign voice model for podcast generation"
+                          >
+                            {vm}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Field>
                 </div>
               ) : (
                 <>
@@ -326,6 +409,44 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
                       onChange={(e) => onChange({ freeLlmApiModel: e.target.value.trim() })}
                       placeholder="auto"
                     />
+                  </Field>
+                  <Field
+                    label="Podcast Voice / TTS Model"
+                    hint={'Assigned TTS voice model for Podcast audio via /audio/speech (or "auto" to route sequentially through available voice models).'}
+                  >
+                    <div className="flex gap-1.5">
+                      <TextInput
+                        value={settings.freeLlmVoiceModel ?? 'auto'}
+                        onChange={(e) => onChange({ freeLlmVoiceModel: e.target.value.trim() })}
+                        placeholder="auto"
+                      />
+                      {suggestedVoiceModels.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={assignNextVoiceInSequence}
+                          className="shrink-0 rounded-lg bg-emerald-500/20 border border-emerald-500/40 px-2.5 py-1 text-[10px] font-bold text-emerald-300 hover:bg-emerald-500/30 transition-colors"
+                          title="Assign the next available TTS model in sequence"
+                        >
+                          Assign next TTS
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1 pt-1">
+                      {['auto', ...suggestedVoiceModels.slice(0, 8)].map((vm) => {
+                        const active = (settings.freeLlmVoiceModel || 'auto') === vm;
+                        return (
+                          <button
+                            key={vm}
+                            type="button"
+                            onClick={() => onChange({ freeLlmVoiceModel: vm })}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-mono transition-colors ${active ? 'bg-emerald-500 text-black font-bold' : 'bg-app-bg border border-app-border text-app-dim hover:text-app-text'}`}
+                            title="Assign voice model for podcast generation"
+                          >
+                            {vm}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </Field>
                   <button
                     type="button"
@@ -391,6 +512,26 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset }) =>
               </span>
             )}
           </div>
+          {probe?.voiceModels?.length ? (
+            <div className="max-h-24 overflow-y-auto custom-scrollbar rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2">
+              <div className="mb-1 text-[10px] font-bold uppercase text-emerald-400">
+                {probe.voiceModels.length} voice / TTS models (click to assign for podcasts)
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {probe.voiceModels.slice(0, 30).map((vm) => (
+                  <button
+                    key={vm}
+                    type="button"
+                    onClick={() => onChange({ freeLlmVoiceModel: vm })}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-mono transition-colors ${(settings.freeLlmVoiceModel || 'auto') === vm ? 'bg-emerald-500 text-black font-bold' : 'bg-app-panel text-emerald-300 hover:bg-emerald-500/20'}`}
+                    title="Assign this voice model for podcast generation"
+                  >
+                    {vm}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {probe?.models?.length ? (
             <div className="max-h-28 overflow-y-auto custom-scrollbar rounded-lg border border-app-border bg-app-bg p-2">
               <div className="mb-1 text-[10px] font-bold uppercase text-app-dim">{probe.models.length} models</div>

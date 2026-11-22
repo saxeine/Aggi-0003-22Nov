@@ -21,20 +21,41 @@ export interface FreeLlmKeyEntry {
   enabled?: boolean;
 }
 
+/**
+ * Default provider slots auto-loaded by MAGGI's FreeLLMAPI router.
+ * Actual API keys live on the server (`FREELLMAPI_KEYS_JSON` env) or are
+ * uploaded/entered by the user on the Key Defaults page to overwrite defaults.
+ */
+export const DEFAULT_KEY_POOL_PROVIDERS: FreeLlmKeyEntry[] = [
+  { platform: 'cloudflare', key: '', label: '', enabled: true },
+  { platform: 'custom', key: '', label: 'integrate.api.nvidia.com', baseUrl: 'https://integrate.api.nvidia.com/v1', enabled: true },
+  { platform: 'custom', key: '', label: 'aihubmix.com', baseUrl: 'https://aihubmix.com/v1', enabled: true },
+  { platform: 'custom', key: '', label: 'api.inferbase.ai', baseUrl: 'https://api.inferbase.ai/api/v1/inference', enabled: true },
+  { platform: 'google', key: '', label: '', enabled: true },
+  { platform: 'groq', key: '', label: 'GROK', enabled: true },
+  { platform: 'nvidia', key: '', label: '', enabled: true },
+  { platform: 'openrouter', key: '', label: '', enabled: true },
+  { platform: 'zhipu', key: '', label: '', enabled: true },
+];
+
 export interface MaggiSettings {
   // --- Brain -------------------------------------------------------------
   provider: MaggiProvider;
 
-  /** 'url' connects to a FreeLLMAPI proxy; 'keypool' uses imported provider keys directly on the server. */
+  /** 'url' connects to a FreeLLMAPI proxy; 'keypool' uses provider keys directly on the server. */
   freeLlmMode: 'url' | 'keypool';
-  /** Imported FreeLLMAPI keys (from freellmapi-keys.json export or manual entry). */
+  /** User-uploaded or manually edited FreeLLMAPI keys (from freellmapi-keys.json or Defaults page). */
   freeLlmKeys: FreeLlmKeyEntry[];
+  /** When true, freeLlmKeys completely overwrites server FREELLMAPI_KEYS_JSON defaults instead of merging. */
+  freeLlmOverwriteDefaults: boolean;
   /** FreeLLMAPI base URL, e.g. http://localhost:3001/v1 */
   freeLlmApiBaseUrl: string;
   /** FreeLLMAPI unified key (`freellmapi-...`). Kept server-side when env is used. */
   freeLlmApiKey: string;
   /** "auto" lets the FreeLLMAPI router choose, or "auto:fast" / "auto:smart" / a model id. */
   freeLlmApiModel: string;
+  /** "auto" picks the best available TTS/voice model in FreeLLMAPI (or an explicit voice model id like "tts-1", "google:gemini-3.8-flash-tts"). */
+  freeLlmVoiceModel: string;
 
   /** Optional Gemini override used as a fallback brain. */
   geminiModel: string;
@@ -86,11 +107,13 @@ export interface MaggiSettings {
 export const DEFAULT_MAGGI_SETTINGS: MaggiSettings = {
   provider: 'freellmapi',
 
-  freeLlmMode: 'url',
+  freeLlmMode: 'keypool',
   freeLlmKeys: [],
+  freeLlmOverwriteDefaults: false,
   freeLlmApiBaseUrl: 'http://localhost:3001/v1',
   freeLlmApiKey: '',
   freeLlmApiModel: 'auto',
+  freeLlmVoiceModel: 'auto',
 
   geminiModel: 'gemini-4-hydrogen',
 

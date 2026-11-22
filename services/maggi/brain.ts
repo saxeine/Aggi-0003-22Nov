@@ -16,6 +16,7 @@
  */
 
 import { MaggiSettings, MaggiProvider, PROVIDER_LABELS } from '../../maggi/config';
+import type { VoiceSettings } from '../../types';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -46,7 +47,13 @@ export interface MaggiBrain {
   complete: (messages: ChatMessage[], opts?: CompletionOptions) => Promise<CompletionResult>;
   stream: (messages: ChatMessage[], opts: CompletionOptions, onDelta: StreamHandler) => Promise<CompletionResult>;
   /** Cheap connectivity probe used by the settings panel. */
-  probe: () => Promise<{ ok: boolean; detail: string; models?: string[] }>;
+  probe: () => Promise<{
+    ok: boolean;
+    detail: string;
+    models?: string[];
+    voiceModels?: string[];
+    providerResults?: Array<{ platform: string; ok: boolean; error?: string }>;
+  }>;
 }
 
 const normaliseBaseUrl = (url: string): string => {
@@ -58,9 +65,15 @@ const normaliseBaseUrl = (url: string): string => {
     cleaned = `${isLocal || /:\d+/.test(cleaned) ? 'http' : 'https'}://${cleaned}`;
   }
   cleaned = cleaned
-    .replace(/\/(chat\/completions|completions|embeddings|models)$/i, '')
+    .replace(/\/(chat\/completions|completions|embeddings|models|audio\/speech)$/i, '')
     .replace(/\/+$/, '');
-  if (!/\/v\d+(\.\d+)?$/i.test(cleaned) && !cleaned.toLowerCase().endsWith('/v1')) {
+  let hasVersionSegment = false;
+  try {
+    hasVersionSegment = /\/v\d+(?:\.\d+)?(?:\/|$)/i.test(new URL(cleaned).pathname);
+  } catch {
+    hasVersionSegment = /\/v\d+(?:\.\d+)?(?:\/|$)/i.test(cleaned);
+  }
+  if (!hasVersionSegment) {
     cleaned = `${cleaned}/v1`;
   }
   return cleaned;
@@ -123,6 +136,7 @@ const buildPayload = (settings: MaggiSettings, messages: ChatMessage[], opts: Co
     payload.freeLlmMode = mode;
     if (mode === 'keypool') {
       payload.keyPool = settings.freeLlmKeys || [];
+      payload.overwriteDefaults = !!settings.freeLlmOverwriteDefaults;
     } else {
       payload.baseUrl = normaliseBaseUrl(settings.freeLlmApiBaseUrl);
       payload.apiKey = settings.freeLlmApiKey.trim();
@@ -343,14 +357,29 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
       : provider === 'openai-compatible' ? settings.openAiApiKey : '').trim();
 
     try {
-      const res = await postJson('/api/maggi/probe', {
-        provider: normProvider,
-        ...(normProvider === 'freellmapi' ? { freeLlmMode: mode, keyPool: mode === 'keypool' ? (settings.freeLlmKeys || []) : undefined } : {}),
-        baseUrl: cleanBase,
-        apiKey: cleanKey || undefined,
-        model: provider === 'freellmapi' ? settings.freeLlmApiModel
-          : provider === 'openai-compatible' ? settings.openAiModel : settings.ollamaModel,
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const geminiKey = readCustomGeminiKeyHeader();
+      if (geminiKey) headers['x-gemini-key'] = geminiKey;
+      const res = await fetch('/api/maggi/probe', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          provider: normProvider,
+          ...(normProvider === 'freellmapi' ? {
+            freeLlmMode: mode,
+            keyPool: mode === 'keypool' ? (settings.freeLlmKeys || []) : undefined,
+            overwriteDefaults: mode === 'keypool' ? !!settings.freeLlmOverwriteDefaults : undefined,
+          } : {}),
+          baseUrl: cleanBase,
+          apiKey: cleanKey || undefined,
+          model: provider === 'freellmapi' ? settings.freeLlmApiModel
+            : provider === 'openai-compatible' ? settings.openAiModel : settings.ollamaModel,
+        }),
       });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 400) || res.statusText}`);
+      }
       const data = await res.json();
 
       if (!data.ok && mode !== 'keypool' && (normProvider === 'freellmapi' || normProvider === 'openai') && cleanBase && isLoopbackUrl(cleanBase)
@@ -365,10 +394,12 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
           }
           const directJson = await direct.json();
           const models = (directJson.data ?? directJson.models ?? []).map((m: any) => m.id ?? m.name).filter(Boolean);
+          const voiceModels = models.filter((id: string) => isVoiceModelId(id));
           return {
             ok: true,
             detail: `Connected directly from browser — ${models.length} models available${cleanKey ? '' : ' (no key: anonymous providers only)'}`,
             models: models.slice(0, 200),
+            voiceModels: voiceModels.slice(0, 60),
           };
         } catch (directErr) {
           return { ok: false, detail: formatLoopbackBrowserError(cleanBase, directErr) };
@@ -379,6 +410,8 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
         ok: !!data.ok,
         detail: data.detail || (data.ok ? 'Connected' : 'Unreachable'),
         models: data.models,
+        voiceModels: data.voiceModels,
+        providerResults: data.providerResults,
       };
     } catch (e) {
       return { ok: false, detail: (e as Error).message };
@@ -404,3 +437,183 @@ export const brainAsLlm = (brain: MaggiBrain) => ({
     return res.text;
   },
 });
+
+export const isVoiceModelId = (modelId: string): boolean => {
+  const id = (modelId || '').toLowerCase();
+  if (!id) return false;
+  if (id.includes('transcribe') || id.includes('whisper') || id.includes('stt')) return false;
+  return /(?:^|[-_:/])(tts|speech|kokoro|orpheus|playai|melotts|bark|cartesia|sonic|parler|chatterbox|f5-tts|xtts|piper|eleven|aura|sesame|csm|vits)(?:$|[-_:/0-9])/i.test(id)
+    || id.includes('-tts')
+    || id.includes('tts-1')
+    || id.includes('audio-preview');
+};
+
+const readCustomGeminiKeyHeader = (): string | undefined => {
+  try {
+    const saved = localStorage.getItem('gemini_media_aggregator_settings');
+    if (!saved) return undefined;
+    const parsed = JSON.parse(saved);
+    return typeof parsed?.geminiApiKey === 'string' && parsed.geminiApiKey.trim()
+      ? parsed.geminiApiKey.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const arrayBufferToBase64 = (buf: ArrayBuffer): string => {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+};
+
+export interface MaggiSpeechResult {
+  audioBase64: string;
+  mimeType: string;
+  model?: string;
+  routedVia?: string;
+  assignedVoiceModel?: string;
+  fallbackUsed?: boolean;
+}
+
+export const generateMaggiSpeech = async (
+  text: string,
+  speakers: number,
+  voiceSettings: VoiceSettings,
+  maggiSettings: MaggiSettings,
+): Promise<MaggiSpeechResult> => {
+  const normProvider = normaliseProvider(maggiSettings.provider);
+  const mode = normProvider === 'freellmapi'
+    ? (maggiSettings.freeLlmMode || (maggiSettings.freeLlmKeys?.length ? 'keypool' : 'url'))
+    : 'url';
+  const targetBase = normProvider === 'freellmapi' && mode !== 'keypool'
+    ? normaliseBaseUrl(maggiSettings.freeLlmApiBaseUrl)
+    : normProvider === 'openai'
+      ? normaliseBaseUrl(maggiSettings.openAiBaseUrl)
+      : undefined;
+  const targetKey = normProvider === 'freellmapi' && mode !== 'keypool'
+    ? maggiSettings.freeLlmApiKey.trim()
+    : normProvider === 'openai'
+      ? maggiSettings.openAiApiKey.trim()
+      : '';
+
+  const payload = {
+    provider: normProvider,
+    freeLlmMode: mode,
+    ...(mode === 'keypool' ? {
+      keyPool: maggiSettings.freeLlmKeys || [],
+      overwriteDefaults: !!maggiSettings.freeLlmOverwriteDefaults,
+    } : {}),
+    ...(targetBase ? { baseUrl: targetBase } : {}),
+    ...(targetKey ? { apiKey: targetKey } : {}),
+    voiceModel: maggiSettings.freeLlmVoiceModel || 'auto',
+    text,
+    speakers,
+    voiceSettings,
+  };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const geminiKey = readCustomGeminiKeyHeader();
+  if (geminiKey) headers['x-gemini-key'] = geminiKey;
+
+  const res = await fetch('/api/maggi/tts', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    if (!data?.audioBase64) throw new Error('MAGGI TTS returned empty audio.');
+    return {
+      audioBase64: data.audioBase64,
+      mimeType: data.mimeType || 'audio/wav',
+      model: data.model,
+      routedVia: data.routedVia,
+      assignedVoiceModel: data.assignedVoiceModel,
+      fallbackUsed: Boolean(data.fallbackUsed),
+    };
+  }
+
+  const errText = await res.text().catch(() => '');
+  let parsed: any = null;
+  try { parsed = JSON.parse(errText); } catch { /* raw text */ }
+
+  if (
+    (normProvider === 'freellmapi' || normProvider === 'openai')
+    && mode !== 'keypool'
+    && targetBase
+    && isLoopbackUrl(targetBase)
+    && (parsed?.code === 'LOOPBACK_UNREACHABLE' || /ECONNREFUSED|LOOPBACK_UNREACHABLE|fetch failed/i.test(errText))
+  ) {
+    const directModel = payload.voiceModel !== 'auto'
+      ? (payload.voiceModel.includes(':') && !payload.voiceModel.includes('/') ? payload.voiceModel.split(':')[1] : payload.voiceModel)
+      : 'tts-1';
+    const hostVoiceMap: Record<string, string> = {
+      kore: 'nova',
+      zephyr: 'shimmer',
+      aoede: 'alloy',
+      puck: 'echo',
+      charon: 'onyx',
+      fenrir: 'fable',
+    };
+    const mappedVoice = hostVoiceMap[(voiceSettings?.host || '').toLowerCase()] || 'alloy';
+    const directRes = await fetch(`${targetBase}/audio/speech`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(targetKey ? { Authorization: `Bearer ${targetKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: directModel,
+        input: text.slice(0, 4000),
+        voice: mappedVoice,
+      }),
+    });
+    if (!directRes.ok) {
+      const raw = await directRes.text().catch(() => '');
+      throw new Error(`Local FreeLLMAPI TTS failed (${directRes.status}): ${raw.slice(0, 200) || directRes.statusText}`);
+    }
+    const buf = await directRes.arrayBuffer();
+    const ct = (directRes.headers.get('content-type') || 'audio/mpeg').split(';')[0].trim();
+    return {
+      audioBase64: arrayBufferToBase64(buf),
+      mimeType: ct.startsWith('audio/') ? ct : 'audio/mpeg',
+      model: directModel,
+      routedVia: `browser-direct/${directModel}`,
+    };
+  }
+
+  throw new Error(parsed?.error || `MAGGI TTS failed (${res.status}): ${errText.slice(0, 240)}`);
+};
+
+export interface MaskedEnvDefaultEntry {
+  platform: string;
+  label?: string;
+  baseUrl?: string;
+  enabled: boolean;
+  hasKey: boolean;
+  maskedKey: string;
+  source: 'env';
+}
+
+export const fetchMaggiEnvDefaults = async (): Promise<{
+  hasEnvPool: boolean;
+  entries: MaskedEnvDefaultEntry[];
+}> => {
+  try {
+    const res = await fetch('/api/maggi/defaults');
+    if (!res.ok) return { hasEnvPool: false, entries: [] };
+    const data = await res.json();
+    return {
+      hasEnvPool: !!data?.hasEnvPool,
+      entries: Array.isArray(data?.entries) ? data.entries : [],
+    };
+  } catch {
+    return { hasEnvPool: false, entries: [] };
+  }
+};

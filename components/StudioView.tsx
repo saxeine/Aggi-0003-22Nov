@@ -1,9 +1,9 @@
 import ToolOrderSettingsModal from './ToolOrderSettingsModal';
 import PodcastCreator from './PodcastCreator';
 import PodcastResultView from './PodcastResultView';
-import { computePodcastGate, PodcastRole } from '../utils/podcastGating';
+import { computePodcastGate, buildStaggeredDefaultVoiceSettings, PodcastRole } from '../utils/podcastGating';
 import React, { useState, useEffect } from 'react';
-import { VoiceSettings, Session, MediaItem, PromptTemplate, CastMember } from '../types';
+import { VoiceSettings, Session, MediaItem, PromptTemplate, CastMember, ThemeSettings } from '../types';
 import PromptLibraryModal from './PromptLibraryModal';
 import CastLibraryModal from './CastLibraryModal';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -70,6 +70,12 @@ interface StudioViewProps {
   onClearInitialBuilderData?: () => void;
   currentTheme?: string;
   onSaveArtifact?: (item: MediaItem) => void;
+  initialTool?: string | null;
+  onClearInitialTool?: () => void;
+  initialPodcastDraft?: { text: string; key: number } | null;
+  onClearInitialPodcastDraft?: () => void;
+  audioProvider?: ThemeSettings['provider'];
+  onChangeAudioProvider?: (provider: 'maggi' | 'gemini') => void;
 }
 
 const StudioView: React.FC<StudioViewProps> = ({
@@ -108,7 +114,13 @@ const StudioView: React.FC<StudioViewProps> = ({
   onDeleteMIPrOMPT,
   initialBuilderData,
   onClearInitialBuilderData,
-  onSaveArtifact
+  onSaveArtifact,
+  initialTool,
+  onClearInitialTool,
+  initialPodcastDraft,
+  onClearInitialPodcastDraft,
+  audioProvider,
+  onChangeAudioProvider
 }) => {
   const { t } = useLanguage();
   const [localTheme, setLocalTheme] = useState<'charcoal' | 'silver' | 'white' | 'cosmic' | 'emerald' | 'amber' | 'cyberpunk' | 'slate' | 'crimson' | 'orchid' | 'olive'>(() => {
@@ -137,8 +149,15 @@ const StudioView: React.FC<StudioViewProps> = ({
   const st = themeStyles[localTheme];
 
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
-  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [activeTool, setActiveTool] = useState<string | null>(initialTool || null);
   const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    if (initialTool) {
+      setActiveTool(initialTool);
+      onClearInitialTool?.();
+    }
+  }, [initialTool, onClearInitialTool]);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [globalPodcastHistory, setGlobalPodcastHistory] = useState<MediaItem[]>([]);
@@ -197,10 +216,19 @@ const StudioView: React.FC<StudioViewProps> = ({
   // Controlled PodcastCreator topic & session context state
   const [podcastCustomInput, setPodcastCustomInput] = useState('');
   const [podcastIncludeSessionData, setPodcastIncludeSessionData] = useState(hasActiveSession);
+  const [podcastDraftRevision, setPodcastDraftRevision] = useState(0);
 
   useEffect(() => {
     setPodcastIncludeSessionData(hasActiveSession);
   }, [hasActiveSession]);
+
+  useEffect(() => {
+    if (initialPodcastDraft) {
+      setPodcastCustomInput(initialPodcastDraft.text);
+      setPodcastDraftRevision(initialPodcastDraft.key);
+      onClearInitialPodcastDraft?.();
+    }
+  }, [initialPodcastDraft, onClearInitialPodcastDraft]);
 
   // YouTube Transcript State
   const [ytLink, setYtLink] = useState('');
@@ -1415,6 +1443,8 @@ You MUST return ONLY a valid raw JSON object matching the following TypeScript s
                   onRunTool={onRunTool}
                   isLoading={isLoading}
                   hasActiveSession={hasActiveSession}
+                  session={session}
+                  draftRevision={podcastDraftRevision}
                   castLibrary={castLibrary}
                   setIsCastLibraryOpen={setIsCastLibraryOpen}
                   activeFormat={activeFormat}
@@ -1427,6 +1457,8 @@ You MUST return ONLY a valid raw JSON object matching the following TypeScript s
                   onChangeCustomInput={setPodcastCustomInput}
                   includeSessionData={podcastIncludeSessionData}
                   onChangeIncludeSessionData={setPodcastIncludeSessionData}
+                  audioProvider={audioProvider}
+                  onChangeAudioProvider={onChangeAudioProvider}
               />
             )}
 
@@ -2473,17 +2505,10 @@ You MUST return ONLY a valid raw JSON object matching the following TypeScript s
                 castLibrary={castLibrary}
                 voiceSettings={voiceSettings}
                 onResetVoiceSettings={() => {
-                    setTouchedRoles(['host']);
-                    onUpdateVoiceSettings({
-                        ...voiceSettings,
-                        host: 'Kore',
-                        hostLabel: 'Narrator Bot',
-                        hostBio: 'A clear, authoritative, and friendly voice, perfect for hosting and guiding the listener through complex topics.',
-                        hostAvatar: 'https://picsum.photos/seed/narrator/60/60',
-                        hostMemberId: 'sys-host-1',
-                        expertMemberId: undefined,
-                        guestMemberId: undefined
-                    });
+                    const { voiceSettings: nextVoiceSettings, touchedRoles: nextTouched } =
+                      buildStaggeredDefaultVoiceSettings(voiceSettings, castLibrary);
+                    setTouchedRoles(nextTouched);
+                    onUpdateVoiceSettings(nextVoiceSettings);
                 }}
                 onAssignRole={(role, member) => {
                     const updates: Partial<VoiceSettings> = {};

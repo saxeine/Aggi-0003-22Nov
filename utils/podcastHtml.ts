@@ -40,8 +40,9 @@ export function buildScriptLinesHtml(script: string, voiceSettings: VoiceSetting
   return htmlOutput;
 }
 
-export function buildAudioPlayerHtml(audioBase64: string | null): string {
+export function buildAudioPlayerHtml(audioBase64: string | null, mimeType: string = 'audio/wav'): string {
   if (!audioBase64) return '';
+  const safeMime = mimeType || 'audio/wav';
   return `
                 <div class="podcast-player-card" style="background: #1a1a1a; padding: 16px 20px; border-radius: 12px; margin-bottom: 24px; border: 1px solid #333; position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
                     <style>
@@ -56,7 +57,7 @@ export function buildAudioPlayerHtml(audioBase64: string | null): string {
                       .podcast-player-card .pp-vol-label { font-family: ui-monospace, monospace; font-size: 11px; color: #cbd5e1 !important; min-width: 34px; text-align: right; }
                     </style>
                     <h3 style="color: #fff; margin-top: 0; margin-bottom: 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px;">Audio Overview</h3>
-                    <audio id="podcast-audio-el" preload="metadata" src="data:audio/wav;base64,${audioBase64}" style="display: none;"></audio>
+                    <audio id="podcast-audio-el" preload="metadata" src="data:${safeMime};base64,${audioBase64}" style="display: none;"></audio>
                     <div class="pp-bar">
                       <button type="button" id="pp-play-btn" class="pp-btn" aria-label="Play or Pause" title="Play / Pause">&#9654;</button>
                       <div class="pp-seek-wrap">

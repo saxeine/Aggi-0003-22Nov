@@ -6,7 +6,10 @@ import { PROVIDER_LABELS } from '../maggi/config';
 import MaggiChat from './maggi/MaggiChat';
 import MaggiSources from './maggi/MaggiSources';
 import MaggiSettingsPanel from './maggi/MaggiSettings';
+import MaggiKeyDefaults from './maggi/MaggiKeyDefaults';
 import { SavedMaggiQuery } from '../services/maggi/types';
+
+export type MaggiTab = 'chat' | 'sources' | 'saved' | 'defaults' | 'settings';
 
 interface MaggiViewProps {
   onBack: () => void;
@@ -14,9 +17,11 @@ interface MaggiViewProps {
   workspaceItems?: Array<{ id: string; name: string; type: string; mimeType?: string; data: string }>;
   workspaceName?: string;
   onSaveToSession?: (title: string, content: string) => void;
+  initialTab?: MaggiTab;
+  onOpenPodcast?: () => void;
 }
 
-type Tab = 'chat' | 'sources' | 'saved' | 'settings';
+type Tab = MaggiTab;
 
 const fileToBase64 = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -44,6 +49,7 @@ const TAB_META: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'sources', label: 'Sources', icon: '📚' },
   { id: 'saved', label: 'Saved', icon: '🔖' },
+  { id: 'defaults', label: 'Defaults', icon: '🔑' },
   { id: 'settings', label: 'Settings', icon: '⚙︎' },
 ];
 
@@ -85,8 +91,10 @@ const MaggiView: React.FC<MaggiViewProps> = ({
   workspaceItems = [],
   workspaceName,
   onSaveToSession,
+  initialTab = 'chat',
+  onOpenPodcast,
 }) => {
-  const [tab, setTab] = useState<Tab>('chat');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [toast, setToast] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<{ docId: string; chunkId: string } | null>(null);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -235,6 +243,17 @@ const MaggiView: React.FC<MaggiViewProps> = ({
         </nav>
 
         <div className="ml-auto flex items-center gap-2">
+          {onOpenPodcast && (
+            <button
+              type="button"
+              onClick={onOpenPodcast}
+              className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-[11px] font-bold text-rose-300 transition-colors hover:bg-rose-500/25 hover:text-white"
+              title="Open Podcast Studio"
+            >
+              <span>🎙️</span>
+              <span>Podcast</span>
+            </button>
+          )}
           <button
             onClick={() => setStatsOpen((v) => !v)}
             className="flex items-center gap-1.5 rounded-lg border border-app-border px-2.5 py-1.5 text-[10px] font-bold text-app-dim hover:text-app-text"
@@ -578,6 +597,14 @@ const MaggiView: React.FC<MaggiViewProps> = ({
           </div>
         )}
 
+        {tab === 'defaults' && (
+          <MaggiKeyDefaults
+            settings={maggi.settings}
+            onChange={maggi.updateSettings}
+            onToast={showToast}
+          />
+        )}
+
         {tab === 'settings' && (
           <div className="h-full overflow-y-auto custom-scrollbar p-4">
             <div className="mx-auto max-w-2xl">
@@ -592,6 +619,7 @@ const MaggiView: React.FC<MaggiViewProps> = ({
                 settings={maggi.settings}
                 onChange={maggi.updateSettings}
                 onReset={maggi.resetSettings}
+                onOpenDefaults={() => setTab('defaults')}
               />
             </div>
           </div>

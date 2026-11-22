@@ -39,11 +39,19 @@ export const normaliseBaseUrl = (url: string): string => {
 
   // Strip full endpoint suffixes if pasted by mistake
   cleaned = cleaned
-    .replace(/\/(chat\/completions|completions|embeddings|models)$/i, '')
+    .replace(/\/(chat\/completions|completions|embeddings|models|audio\/speech)$/i, '')
     .replace(/\/+$/, '');
 
-  // Accept both "http://host:3001" and "http://host:3001/v1"
-  if (!/\/v\d+(\.\d+)?$/i.test(cleaned) && !cleaned.toLowerCase().endsWith('/v1')) {
+  // Accept both "http://host:3001" and "http://host:3001/v1", while preserving
+  // custom endpoints that already contain a version segment like "/api/v1/inference".
+  let hasVersionSegment = false;
+  try {
+    const pathname = new URL(cleaned).pathname;
+    hasVersionSegment = /\/v\d+(?:\.\d+)?(?:\/|$)/i.test(pathname);
+  } catch {
+    hasVersionSegment = /\/v\d+(?:\.\d+)?(?:\/|$)/i.test(cleaned);
+  }
+  if (!hasVersionSegment) {
     cleaned = `${cleaned}/v1`;
   }
 
@@ -243,6 +251,34 @@ export const parseEnvKeyPool = (): KeyPoolEntry[] => {
   }
 };
 
+export const maskKeyServer = (key: string): string => {
+  const s = (key || '').trim();
+  if (!s) return '';
+  if (s.length <= 10) return '••••••••';
+  return `${s.slice(0, 6)}••••${s.slice(-4)}`;
+};
+
+export interface MaskedDefaultKeyEntry {
+  platform: string;
+  label?: string;
+  baseUrl?: string;
+  enabled: boolean;
+  hasKey: boolean;
+  maskedKey: string;
+  source: 'env';
+}
+
+export const getMaskedEnvKeyPool = (): MaskedDefaultKeyEntry[] =>
+  parseEnvKeyPool().map((entry) => ({
+    platform: (entry.platform || '').trim().toLowerCase(),
+    ...(entry.label ? { label: String(entry.label).trim() } : {}),
+    ...(entry.baseUrl ? { baseUrl: String(entry.baseUrl).replace(/\s+/g, '') } : {}),
+    enabled: entry.enabled !== false,
+    hasKey: Boolean(entry.key && entry.key.trim()),
+    maskedKey: maskKeyServer(entry.key),
+    source: 'env' as const,
+  }));
+
 export const PLATFORM_PRIORITY = [
   'openrouter',
   'nvidia',
@@ -399,9 +435,44 @@ export const resolveKeyPoolEntry = (entry: KeyPoolEntry, requestedModel: string)
   };
 };
 
-export const buildKeyPoolTargets = (clientEntries: unknown, requestedModel = 'auto'): ResolvedTarget[] => {
-  const clientList = Array.isArray(clientEntries) ? clientEntries : [];
-  const combined = [...clientList, ...parseEnvKeyPool()];
+const slotKeyForEntry = (entry: KeyPoolEntry): string => {
+  const platform = (entry.platform || '').trim().toLowerCase();
+  const base = entry.baseUrl ? normaliseBaseUrl(entry.baseUrl).toLowerCase() : '';
+  return `${platform}::${base}`;
+};
+
+const combineClientAndEnvEntries = (clientEntries: unknown, overwriteDefaults = false): KeyPoolEntry[] => {
+  const clientList = Array.isArray(clientEntries) ? (clientEntries as KeyPoolEntry[]) : [];
+  if (overwriteDefaults) {
+    return clientList;
+  }
+
+  const disabledSlots = new Set<string>();
+  const overriddenSlotsWithKeys = new Set<string>();
+  for (const item of clientList) {
+    if (!item || typeof item.platform !== 'string') continue;
+    const slot = slotKeyForEntry(item);
+    if (item.enabled === false) {
+      disabledSlots.add(slot);
+    } else if (item.key && item.key.trim()) {
+      overriddenSlotsWithKeys.add(slot);
+    }
+  }
+
+  const envEntries = parseEnvKeyPool().filter((envItem) => {
+    const slot = slotKeyForEntry(envItem);
+    return !disabledSlots.has(slot) && !overriddenSlotsWithKeys.has(slot);
+  });
+
+  return [...clientList, ...envEntries];
+};
+
+export const buildKeyPoolTargets = (
+  clientEntries: unknown,
+  requestedModel = 'auto',
+  overwriteDefaults = false,
+): ResolvedTarget[] => {
+  const combined = combineClientAndEnvEntries(clientEntries, overwriteDefaults);
 
   // Support explicit "platform:modelId" pinning (e.g. "nvidia:meta/llama-3.3-70b-instruct")
   let pinnedPlatform: string | null = null;
@@ -444,6 +515,359 @@ export const buildKeyPoolTargets = (clientEntries: unknown, requestedModel = 'au
 
   return resolved;
 };
+
+// ---------------------------------------------------------------------------
+// Voice / TTS model discovery & key-pool routing for Podcast audio
+// ---------------------------------------------------------------------------
+
+export const PLATFORM_TTS_DEFAULTS: Record<string, string[]> = {
+  google: ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'],
+  openai: ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+  groq: ['playai-tts', 'canopylabs/orpheus-v1-english'],
+  cloudflare: ['@cf/myshell-ai/melotts'],
+  together: ['cartesia/sonic'],
+};
+
+export const VOICE_PLATFORM_PRIORITY = [
+  'google',
+  'openai',
+  'groq',
+  'together',
+  'cloudflare',
+  'custom',
+  'openrouter',
+  'nvidia',
+];
+
+export const isVoiceModelId = (modelId: string): boolean => {
+  const id = (modelId || '').toLowerCase();
+  if (!id) return false;
+  if (id.includes('transcribe') || id.includes('whisper') || id.includes('stt')) return false;
+  return /(?:^|[-_:/])(tts|speech|kokoro|orpheus|playai|melotts|bark|cartesia|sonic|parler|chatterbox|f5-tts|xtts|piper|eleven|aura|sesame|csm|vits)(?:$|[-_:/0-9])/i.test(id)
+    || id.includes('-tts')
+    || id.includes('tts-1')
+    || id.includes('audio-preview');
+};
+
+export const pickVoiceModelForPlatform = (
+  platform: string,
+  requestedVoiceModel: string,
+  speakers = 1,
+): { model: string; defaults: string[] } => {
+  const req = (requestedVoiceModel || 'auto').trim();
+  const isAuto = !req || req === 'auto' || req.startsWith('auto:');
+  const defaults = PLATFORM_TTS_DEFAULTS[platform] ?? ['tts-1'];
+
+  if (platform === 'google') {
+    const autoModel = speakers >= 2 ? 'gemini-3.8-flash-tts' : 'gemini-3.8-flash-lite-tts';
+    return { model: isAuto ? autoModel : req, defaults };
+  }
+  if (platform === 'openai') {
+    return { model: isAuto ? 'gpt-4o-mini-tts' : req, defaults };
+  }
+  if (platform === 'groq') {
+    return { model: isAuto ? 'playai-tts' : req, defaults };
+  }
+  if (platform === 'cloudflare') {
+    return { model: isAuto ? '@cf/myshell-ai/melotts' : req, defaults };
+  }
+  if (platform === 'together') {
+    return { model: isAuto ? 'cartesia/sonic' : req, defaults };
+  }
+  return { model: isAuto ? defaults[0] || 'tts-1' : req, defaults };
+};
+
+export const buildVoicePoolTargets = (
+  clientEntries: unknown,
+  requestedVoiceModel = 'auto',
+  speakers = 1,
+  overwriteDefaults = false,
+): ResolvedTarget[] => {
+  const combined = combineClientAndEnvEntries(clientEntries, overwriteDefaults);
+
+  let pinnedPlatform: string | null = null;
+  let actualModel = (requestedVoiceModel || 'auto').trim();
+  const colonIdx = actualModel.indexOf(':');
+  if (colonIdx > 0) {
+    const prefix = actualModel.slice(0, colonIdx).toLowerCase();
+    if (PLATFORM_PRIORITY.includes(prefix)) {
+      pinnedPlatform = prefix;
+      actualModel = actualModel.slice(colonIdx + 1) || 'auto';
+    }
+  }
+
+  // If user selected a Gemini TTS model without prefix, prefer Google keys first.
+  if (!pinnedPlatform && actualModel.toLowerCase().includes('gemini') && actualModel.toLowerCase().includes('tts')) {
+    pinnedPlatform = 'google';
+  }
+
+  const resolved: ResolvedTarget[] = [];
+  const seen = new Set<string>();
+
+  for (const item of combined) {
+    const entry = item as KeyPoolEntry;
+    const base = resolveKeyPoolEntry(entry, 'auto');
+    if (!base) continue;
+    const dedupeKey = `${base.baseUrl}::${base.apiKey}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const picked = pickVoiceModelForPlatform(base.platform, actualModel, speakers);
+    resolved.push({
+      ...base,
+      model: picked.model,
+      defaultModels: picked.defaults,
+    });
+  }
+
+  resolved.sort((a, b) => {
+    if (pinnedPlatform) {
+      if (a.platform === pinnedPlatform && b.platform !== pinnedPlatform) return -1;
+      if (b.platform === pinnedPlatform && a.platform !== pinnedPlatform) return 1;
+    }
+    const idxA = VOICE_PLATFORM_PRIORITY.indexOf(a.platform);
+    const idxB = VOICE_PLATFORM_PRIORITY.indexOf(b.platform);
+    return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+  });
+
+  if (pinnedPlatform) {
+    const matching = resolved.filter((t) => t.platform === pinnedPlatform);
+    if (matching.length > 0) return matching;
+  }
+
+  // Only include platforms that either support TTS natively or are custom proxies
+  // unless none of those exist.
+  const ttsCapable = resolved.filter(
+    (t) => Boolean(PLATFORM_TTS_DEFAULTS[t.platform]) || t.platform === 'custom',
+  );
+  return ttsCapable.length > 0 ? ttsCapable : resolved;
+};
+
+export const formatVoiceModelKey = (platform: string, model: string): string => {
+  const cleanModel = (model || '').trim();
+  const cleanPlatform = (platform || '').trim().toLowerCase();
+  if (!cleanModel) return cleanPlatform || 'auto';
+  if (!cleanPlatform) return cleanModel;
+  return cleanModel.toLowerCase().startsWith(`${cleanPlatform}:`)
+    ? cleanModel
+    : `${cleanPlatform}:${cleanModel}`;
+};
+
+export const cleanTtsText = (text: string): string => {
+  const raw = String(text || '');
+  const base = raw
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/<\/?[a-zA-Z!/?][^>]*>/g, ' ')
+    .replace(/#{1,6}\s?/g, '');
+
+  const withoutBrackets = base
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (withoutBrackets) return withoutBrackets;
+
+  // If bracket stripping removed everything (e.g. a line written wholly inside [...]),
+  // keep the inner words without the brackets so valid input never degrades to "".
+  return base
+    .replace(/[\[\]]/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+/**
+ * Build an ordered sequence of `(target, model)` TTS candidates across the entire
+ * FreeLLMAPI key pool. Unlike `buildVoicePoolTargets`, if a pinned platform or model
+ * fails, this yields every remaining model on that platform and then the next
+ * TTS-capable platforms & models in sequential priority order.
+ */
+export const buildSequentialVoiceCandidates = (
+  clientEntries: unknown,
+  requestedVoiceModel = 'auto',
+  speakers = 1,
+  overwriteDefaults = false,
+): ResolvedTarget[] => {
+  const combined = combineClientAndEnvEntries(clientEntries, overwriteDefaults);
+
+  let pinnedPlatform: string | null = null;
+  let actualModel = (requestedVoiceModel || 'auto').trim();
+  const isAuto = !actualModel || actualModel === 'auto' || actualModel.startsWith('auto:');
+
+  if (!isAuto) {
+    const colonIdx = actualModel.indexOf(':');
+    if (colonIdx > 0) {
+      const prefix = actualModel.slice(0, colonIdx).toLowerCase();
+      if (PLATFORM_PRIORITY.includes(prefix)) {
+        pinnedPlatform = prefix;
+        actualModel = actualModel.slice(colonIdx + 1).trim() || 'auto';
+      }
+    }
+    if (!pinnedPlatform && actualModel.toLowerCase().includes('gemini') && actualModel.toLowerCase().includes('tts')) {
+      pinnedPlatform = 'google';
+    }
+  }
+
+  const resolvedAll: ResolvedTarget[] = [];
+  const seenTargets = new Set<string>();
+  for (const item of combined) {
+    const base = resolveKeyPoolEntry(item as KeyPoolEntry, 'auto');
+    if (!base) continue;
+    const dedupeKey = `${base.platform}::${base.baseUrl}::${base.apiKey}`;
+    if (seenTargets.has(dedupeKey)) continue;
+    seenTargets.add(dedupeKey);
+    resolvedAll.push(base);
+  }
+
+  // Keep native TTS platforms + custom proxies (excluding known chat-only custom nvidia URLs)
+  const ttsCapable = resolvedAll.filter((t) => {
+    if (PLATFORM_TTS_DEFAULTS[t.platform]) return true;
+    if (t.platform === 'custom' && !t.baseUrl.includes('nvidia.com')) return true;
+    return pinnedPlatform !== null && t.platform === pinnedPlatform;
+  });
+
+  const pool = ttsCapable.length > 0 ? ttsCapable : resolvedAll;
+
+  pool.sort((a, b) => {
+    if (pinnedPlatform) {
+      if (a.platform === pinnedPlatform && b.platform !== pinnedPlatform) return -1;
+      if (b.platform === pinnedPlatform && a.platform !== pinnedPlatform) return 1;
+    }
+    const idxA = VOICE_PLATFORM_PRIORITY.indexOf(a.platform);
+    const idxB = VOICE_PLATFORM_PRIORITY.indexOf(b.platform);
+    return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
+  });
+
+  const candidates: ResolvedTarget[] = [];
+  const seenCandidateKeys = new Set<string>();
+
+  const pushCandidate = (base: ResolvedTarget, modelId: string, defaults: string[]) => {
+    const cleanModel = (modelId || '').trim();
+    if (!cleanModel || cleanModel === 'auto' || cleanModel.startsWith('auto:')) return;
+    const key = `${base.platform}::${base.baseUrl}::${base.apiKey}::${cleanModel}`;
+    if (seenCandidateKeys.has(key)) return;
+    seenCandidateKeys.add(key);
+    candidates.push({
+      ...base,
+      model: cleanModel,
+      defaultModels: defaults,
+    });
+  };
+
+  for (const target of pool) {
+    const rawDefaults = target.platform === 'google'
+      ? (speakers >= 2
+          ? ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']
+          : ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'])
+      : (PLATFORM_TTS_DEFAULTS[target.platform] ?? ['tts-1', 'gpt-4o-mini-tts']);
+
+    // Requested explicit model goes first on matching platform (or custom/unpinned platforms)
+    if (!isAuto && actualModel && (!pinnedPlatform || target.platform === pinnedPlatform)) {
+      pushCandidate(target, actualModel, rawDefaults);
+    }
+
+    for (const defModel of rawDefaults) {
+      pushCandidate(target, defModel, rawDefaults);
+    }
+  }
+
+  return candidates;
+};
+
+export const mapGeminiVoiceToOpenAi = (voiceName?: string): string => {
+  const v = (voiceName || '').trim().toLowerCase();
+  switch (v) {
+    case 'kore': return 'nova';
+    case 'zephyr': return 'shimmer';
+    case 'aoede': return 'alloy';
+    case 'puck': return 'echo';
+    case 'charon': return 'onyx';
+    case 'fenrir': return 'fable';
+    default:
+      return v || 'alloy';
+  }
+};
+
+export const detectAudioMimeType = (buf: Buffer, headerType?: string | null): string => {
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'RIFF') return 'audio/wav';
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'OggS') return 'audio/ogg';
+  if (buf.length >= 4 && buf.subarray(0, 4).toString('ascii') === 'fLaC') return 'audio/flac';
+  if (
+    (buf.length >= 3 && buf.subarray(0, 3).toString('ascii') === 'ID3')
+    || (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)
+  ) {
+    return 'audio/mpeg';
+  }
+  const ct = (headerType || '').split(';')[0].trim().toLowerCase();
+  if (ct.startsWith('audio/')) return ct;
+  return 'audio/mpeg';
+};
+
+export const addWavHeaderBuffer = (pcm: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16): Buffer => {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+};
+
+/** Concatenates multiple RIFF/WAV buffers (stripping headers after the first). Returns null if incompatible. */
+export const concatWavBuffers = (buffers: Buffer[]): Buffer | null => {
+  if (!buffers.length) return null;
+  if (buffers.length === 1) return buffers[0];
+  const pcmParts: Buffer[] = [];
+  let sampleRate = 24000;
+  let numChannels = 1;
+  let bitsPerSample = 16;
+
+  for (let i = 0; i < buffers.length; i++) {
+    const b = buffers[i];
+    if (b.length < 44 || b.subarray(0, 4).toString('ascii') !== 'RIFF' || b.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      return null;
+    }
+    const ch = b.readUInt16LE(22);
+    const sr = b.readUInt32LE(24);
+    const bps = b.readUInt16LE(34);
+    if (i === 0) {
+      numChannels = ch;
+      sampleRate = sr;
+      bitsPerSample = bps;
+    } else if (ch !== numChannels || sr !== sampleRate || bps !== bitsPerSample) {
+      return null;
+    }
+    // Find the 'data' subchunk safely (normally at offset 36)
+    let offset = 12;
+    let dataStart = 44;
+    let dataSize = b.length - 44;
+    while (offset + 8 <= b.length) {
+      const chunkId = b.subarray(offset, offset + 4).toString('ascii');
+      const chunkSize = b.readUInt32LE(offset + 4);
+      if (chunkId === 'data') {
+        dataStart = offset + 8;
+        dataSize = Math.min(chunkSize, b.length - dataStart);
+        break;
+      }
+      offset += 8 + chunkSize + (chunkSize % 2);
+    }
+    pcmParts.push(b.subarray(dataStart, dataStart + dataSize));
+  }
+
+  return addWavHeaderBuffer(Buffer.concat(pcmParts), sampleRate, numChannels, bitsPerSample);
+};
+
 
 export const htmlToText = (html: string): { text: string; title?: string } => {
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
