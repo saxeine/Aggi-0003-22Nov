@@ -137,7 +137,7 @@ export const createOllamaRouter = () => {
   });
 
   router.post('/chat', async (req, res) => {
-    const { endpoint, model, messages, stream = true } = req.body ?? {};
+    const { endpoint, model, messages, stream = true, options } = req.body ?? {};
     const validation = validateRemoteOllamaUrl(String(endpoint || ''));
     if (!validation.ok) {
       res.status(400).json(validation);
@@ -168,7 +168,7 @@ export const createOllamaRouter = () => {
           'ngrok-skip-browser-warning': 'true',
           'bypass-tunnel-reminder': 'true',
         },
-        body: JSON.stringify({ model, messages, stream: !!stream }),
+        body: JSON.stringify({ model, messages, stream: !!stream, ...(Number.isInteger(options?.num_predict) && options.num_predict > 0 && options.num_predict <= 128 ? { options: { num_predict: options.num_predict } } : {}) }),
         redirect: 'manual',
         signal: controller.signal,
       });

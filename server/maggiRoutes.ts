@@ -342,7 +342,7 @@ export const createMaggiRouter = (): Router => {
               model: model || 'llama3',
               messages,
               stream: false,
-              options: { temperature },
+              options: { temperature, num_predict: maxTokens },
             }),
             redirect: 'manual',
             signal: timeout.signal,

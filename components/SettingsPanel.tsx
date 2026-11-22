@@ -1,3 +1,4 @@
+import TestSubmission from './TestSubmission';
 
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -772,6 +773,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                           />
                         )}
                       </div>
+                      <TestSubmission config={{ provider: 'ollama', endpoint: settings.ollamaEndpoint, model: settings.ollamaModel }} />
                       <p className="text-[9px] text-app-dim italic leading-relaxed">
                         Tunnel URLs (`https://....trycloudflare.com`) route through our server proxy with no CORS setup needed. For direct browser loopback, start Ollama with <code>OLLAMA_ORIGINS="*" ollama serve</code>.
                       </p>
@@ -824,6 +826,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                           placeholder="e.g. /v1/chat/completions"
                         />
                       </div>
+                      <TestSubmission config={{ provider: 'custom', baseUrl: settings.customBaseUrl, apiKey: settings.customApiKey, model: settings.customModelName, apiPath: settings.customApiPath }} />
                       <p className="text-[9px] text-app-dim italic">
                         Requests are routed securely through the local backend proxy to bypass CORS restrictions.
                       </p>

@@ -14,7 +14,7 @@ export interface PodcastHtmlOptions {
 /** Builds per-line color-coded HTML for a podcast script. */
 export function buildScriptLinesHtml(script: string, voiceSettings: VoiceSettings): string {
   const lines = script.split('\n');
-  let htmlOutput = '<div style="max-width: 800px; margin: 0 auto;">';
+  let htmlOutput = '<div data-podcast-script style="max-width: 800px; margin: 0 auto;">';
 
   lines.forEach(line => {
     const trimmed = line.trim();

@@ -637,7 +637,7 @@ export const createCustomAiRouter = () => {
       // Per-session key: sent via header (like x-gemini-key), never persisted,
       // never logged. Body-only fallback is kept for backward compatibility.
       const headerKey = req.headers['x-custom-ai-key'] as string | undefined;
-      const { baseUrl, apiKey: bodyKey, modelName, apiPath, messages } = req.body;
+      const { baseUrl, apiKey: bodyKey, modelName, apiPath, messages, maxTokens } = req.body;
       const apiKey = (headerKey && headerKey.trim()) ? headerKey.trim() : bodyKey;
 
       if (!baseUrl) {
@@ -683,6 +683,7 @@ export const createCustomAiRouter = () => {
       const body = {
         model: modelName || 'gpt-4o-mini',
         messages: messages || [],
+        ...(Number.isInteger(maxTokens) && maxTokens > 0 && maxTokens <= 128 ? { max_tokens: maxTokens } : {}),
       };
 
       const response = await fetch(fullUrl, {

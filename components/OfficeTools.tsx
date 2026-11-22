@@ -1,3 +1,4 @@
+import { AudioEngine } from '../services/customSpeech';
 import ToolOrderSettingsModal from './ToolOrderSettingsModal';
 import PodcastCreator from './PodcastCreator';
 import PodcastResultView from './PodcastResultView';
@@ -50,7 +51,7 @@ interface OfficeToolsProps {
   onLoadAudio?: (item: MediaItem) => void;
   onRemoveMediaItem?: (id: string) => void;
   onRenameMediaItem?: (id: string, name: string) => void;
-  onRegenerate?: (newScript: string) => void;
+  onRegenerate?: (newScript: string, engine: AudioEngine) => void;
   prompts: PromptTemplate[];
   onAddPrompt: (title: string, content: string) => void;
   onDeletePrompt: (id: string) => void;
