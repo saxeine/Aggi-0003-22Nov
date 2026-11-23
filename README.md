@@ -63,7 +63,7 @@ The app uses an abstraction layer in `App.tsx` to route requests to the correct 
 
 #### `services/gemini.ts`
 Interacts directly with the Google GenAI API.
-- **Models**: The catalog lives in `constants/geminiModels.ts` (`DEFAULT_GEMINI_MODEL` = `gemini-4-hydrogen`). Text/balanced: `gemini-4-hydrogen`; reasoning: `gemini-4-neon`; image/video: `gemini-4-argon`, `gemini-4-carbon`; lightweight: `gemini-3.1-flash-lite`; preview: `gemini-3.1-pro-preview`. Legacy names in the request are normalized server-side (`normalizeModel` in `server/gemini.ts`).
+- **Models**: The catalog lives in `constants/geminiModels.ts` (`DEFAULT_GEMINI_MODEL` = `gemini-3.8-flash`). Selectable Flash: `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-4-hydrogen`; reasoning: `gemini-4-neon`; image/video: `gemini-4-argon`, `gemini-4-carbon`; lightweight: `gemini-3.1-flash-lite`; preview: `gemini-3.1-pro-preview`. Legacy names in the request are normalized server-side (`normalizeModel` in `server/gemini.ts`).
 - **Tools**: Uses `googleSearch` tool for resolving Web Link media items.
 - **Context Caching**: Implements `ai.caches.create` to store large media contexts on the server for 10 minutes (TTL), reducing token costs for subsequent queries.
 - **Capabilities**: Supports Text, Images, PDF, Video, Audio.
@@ -71,9 +71,17 @@ Interacts directly with the Google GenAI API.
 
 #### `services/ollama.ts`
 Interacts with a local Ollama instance via Fetch API.
-- **Connection**: Requires `OLLAMA_ORIGINS="*"` on the server side to allow browser CORS access.
+- **Connection**: Local/private endpoints are called directly from the user’s browser, including MAGGI’s Ollama brain. Set Ollama’s `OLLAMA_ORIGINS` to allow the app origin; the backend cannot reach a remote user’s localhost. Public tunnel endpoints use the server proxy.
 - **Capabilities**: Supports Text and Images (if model is multimodal). Non-text/image media are summarized by name/metadata in the prompt context but not processed natively.
 - **Endpoints**: `/api/tags` (list models), `/api/chat` (generate response).
+
+#### Local Ollama setup
+
+1. Install and start Ollama on the computer running your browser. Pull a model, for example `ollama pull llama3.2`.
+2. Allow the app's exact origin (shown in Settings → AI Engine → Ollama) in Ollama's `OLLAMA_ORIGINS`, then restart Ollama. On macOS/Linux, when running Ollama manually, for example: `OLLAMA_ORIGINS="https://your-app-origin" ollama serve`. Stop any existing Ollama server first. On Windows, set `OLLAMA_ORIGINS` as a user environment variable and restart the Ollama application. Use the actual app origin, including its port; avoid `*` unless you understand that it allows requests from any website.
+3. Select **Ollama**, use `http://localhost:11434`, click **Test Connection**, and choose or type the installed model. **Test model submission** sends a short real request. MAGGI → Brain → Ollama uses the same local connection and model discovery.
+
+Localhost refers to the browser's computer, not the hosted application server. Grant any browser local-network permission requested. Some browsers or embedded HTTPS previews block direct local access even with CORS configured; open the app in a new tab, run the app locally, or use a secured HTTPS tunnel. Local Ollama does not require an API key. Do not expose an unauthenticated Ollama service publicly.
 
 #### `services/customAi.ts`
 Interacts with custom OpenAI-compatible endpoints securely.
@@ -105,7 +113,7 @@ Unified provider-agnostic bridge used by interactive Creation Studio applets.
 - `server/security.ts` — security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, HSTS in production) and a per-IP fixed-window rate limiter.
 - `server/gemini.ts` — Gemini client, retry queue, model normalization, `/api/gemini/*`, `/api/custom-ai`, `/api/architecture`.
 - `server/ollamaProxy.ts` — `/api/ollama/*` tunnel proxy with endpoint validation (loopback/private hosts blocked).
-- `server/crypto.ts` — `/api/crypto/*` (prices/info/OHLC/SEK/news) with CoinGecko caching + resilient fallbacks.
+- `server/crypto.ts` — `/api/crypto/*` (prices/info/OHLC/SEK/news) with CoinGecko caching + resilient fallbacks. `/api/crypto/rss` and `/api/crypto/stock-rss` use the allowlisted RSS aggregator in `server/rss.ts`. The stock and crypto readers aggregate sources independently, cache each source for 60 seconds, and label stale results (up to one hour) or unavailable feeds rather than inventing headlines. The RSS routes accept only sanitized `symbol` values and never fetch arbitrary URLs or redirects; XML, links and thumbnails are sanitized before display.
 - `server/maggiRoutes.ts` + `server/maggi/keyPool.ts` — MAGGI RAG engine routes; key-pool/model-resolution logic is extracted into `server/maggi/keyPool.ts`.
 
 **Rate limits** (per IP): `/api/gemini/*` 30/min, `/api/custom-ai` 30/min, `/api/maggi/*` 60/min, `/api/ollama/*` 40/min, `/api/crypto/*` 30/min, `/api/architecture` 120/min.

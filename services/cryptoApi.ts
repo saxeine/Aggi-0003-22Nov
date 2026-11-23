@@ -134,3 +134,32 @@ export const fetchCoinNews = async (symbol: string): Promise<NewsItem[]> => {
     return [];
   }
 };
+
+export type CryptoRssFeedSource = 'cointelegraph' | 'coindesk' | 'decrypt' | 'cryptopotato' | 'google';
+export type StockRssFeedSource = 'yahoo' | 'marketwatch' | 'cnbc' | 'investing' | 'nasdaq' | 'google';
+export type RssSourceState = 'live' | 'cache' | 'stale' | 'error';
+export interface RssFeedItem {
+  id: string;
+  title: string;
+  description: string;
+  url: string;
+  image?: string;
+  source: string;
+  sourceId: string;
+  publishedAt: string | null;
+}
+export interface RssFeedResponse {
+  items: RssFeedItem[];
+  sources: Array<{ id: string; name: string; state: RssSourceState; updatedAt: string | null }>;
+  symbol: string;
+}
+async function fetchRssFeed(path: string, symbol: string, signal?: AbortSignal): Promise<RssFeedResponse> {
+  const params = new URLSearchParams({ symbol });
+  const response = await fetch(`${path}?${params}`, { signal });
+  if (!response.ok) throw new Error(`RSS request failed (HTTP ${response.status})`);
+  const result = await safeJson(response);
+  if (!Array.isArray(result?.items) || !Array.isArray(result?.sources)) throw new Error('Invalid RSS response');
+  return result as RssFeedResponse;
+}
+export const fetchCryptoRssFeed = (symbol: string, signal?: AbortSignal) => fetchRssFeed('/api/crypto/rss', symbol, signal);
+export const fetchStockRssFeed = (symbol: string, signal?: AbortSignal) => fetchRssFeed('/api/crypto/stock-rss', symbol, signal);

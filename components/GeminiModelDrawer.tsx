@@ -18,7 +18,7 @@ interface GeminiModelDrawerProps {
 type TierFilter = 'all' | 'fast' | 'pro';
 
 const TIER_BADGE: Record<GeminiModelOption['tier'], { label: string; cls: string }> = {
-  fast: { label: 'Fast · Default', cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
+  fast: { label: 'Fast', cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
   lite: { label: 'Ultra Fast', cls: 'bg-sky-500/15 text-sky-400 border-sky-500/30' },
   pro: { label: 'Pro · Paid Key', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
   deep: { label: 'Deep Reasoning · Paid Key', cls: 'bg-purple-500/15 text-purple-300 border-purple-500/30' },
@@ -72,7 +72,7 @@ const GeminiModelDrawer: React.FC<GeminiModelDrawerProps> = ({
             </span>
             {activeBadge && (
               <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${activeBadge.cls}`}>
-                {activeBadge.label}
+                {activeOption?.id === DEFAULT_GEMINI_MODEL ? `${activeBadge.label} · Default` : activeBadge.label}
               </span>
             )}
             {isCustomModel && (
@@ -160,7 +160,7 @@ const GeminiModelDrawer: React.FC<GeminiModelDrawerProps> = ({
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-xs font-bold text-app-text">{model.name}</span>
                         <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${badge.cls}`}>
-                          {badge.label}
+                          {model.id === DEFAULT_GEMINI_MODEL ? `${badge.label} · Default` : badge.label}
                         </span>
                         {model.recommended && (
                           <span className="rounded bg-app-text/15 px-1.5 py-0.5 text-[9px] font-bold text-app-text">

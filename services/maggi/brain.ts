@@ -17,6 +17,7 @@
 
 import { MaggiSettings, MaggiProvider, PROVIDER_LABELS } from '../../maggi/config';
 import type { VoiceSettings } from '../../types';
+import { generateOllamaResponse, isLoopbackOrPrivateEndpoint, testOllamaConnection } from '../ollama';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -166,7 +167,23 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
   const provider = settings.provider;
   const label = PROVIDER_LABELS[provider];
 
+  const localOllama = provider === 'ollama' && isLoopbackOrPrivateEndpoint(settings.ollamaBaseUrl);
+  const runLocalOllama = async (messages: ChatMessage[], opts: CompletionOptions, onDelta?: StreamHandler): Promise<CompletionResult> => {
+    const started = performance.now();
+    const model = opts.model || settings.ollamaModel;
+    if (!model?.trim()) throw new Error('Select an Ollama model before submitting.');
+    let text = '';
+    for await (const delta of generateOllamaResponse(settings.ollamaBaseUrl, model, '', [], [], {
+      messages, signal: opts.signal, maxTokens: opts.maxTokens, temperature: opts.temperature ?? settings.temperature,
+    })) {
+      text += delta;
+      onDelta?.(delta);
+    }
+    return { text: text.trim(), provider, model, routedVia: 'browser-direct', latencyMs: Math.round(performance.now() - started) };
+  };
+
   const complete = async (messages: ChatMessage[], opts: CompletionOptions = {}): Promise<CompletionResult> => {
+    if (localOllama) return runLocalOllama(messages, opts);
     const started = performance.now();
     const payload = buildPayload(settings, messages, opts);
     const normProvider = payload.provider as string;
@@ -246,6 +263,7 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
     opts: CompletionOptions,
     onDelta: StreamHandler,
   ): Promise<CompletionResult> => {
+    if (localOllama) return runLocalOllama(messages, opts, onDelta);
     const started = performance.now();
     const payload: Record<string, unknown> = { ...buildPayload(settings, messages, opts), stream: true };
     const normProvider = payload.provider as string;
@@ -343,6 +361,10 @@ export const createBrain = (settings: MaggiSettings): MaggiBrain => {
   };
 
   const probe = async () => {
+    if (localOllama) {
+      const result = await testOllamaConnection(settings.ollamaBaseUrl);
+      return { ok: result.ok, detail: result.detail, models: result.models.map(model => model.name) };
+    }
     const normProvider = normaliseProvider(provider);
     const mode = normProvider === 'freellmapi'
       ? (settings.freeLlmMode || (settings.freeLlmKeys?.length ? 'keypool' : 'url'))

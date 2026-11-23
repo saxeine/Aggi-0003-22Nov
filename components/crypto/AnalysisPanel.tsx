@@ -632,7 +632,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ analysis, candles,
       </div>
 
       {/* Real-time News Stream */}
-      <NewsPanel symbol={coin.symbol} />
+      <NewsPanel symbol={coin.symbol} name={coin.name} />
     </div>
   );
 };

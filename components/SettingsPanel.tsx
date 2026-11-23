@@ -1,11 +1,10 @@
 import TestSubmission from './TestSubmission';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Theme, ThemeSettings, VoiceSettings, CastMember } from '../types';
 import {
   cleanOllamaEndpoint,
-  isLoopbackOrPrivateEndpoint,
   OllamaModel,
   OllamaTestResult,
   testOllamaConnection,
@@ -60,7 +59,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [ollamaTestResult, setOllamaTestResult] = useState<OllamaTestResult | null>(null);
-  const [copiedTunnelCmd, setCopiedTunnelCmd] = useState(false);
+  const ollamaProbeId = useRef(0);
 
   const maggiStore = getMaggiStore();
   const [maggiConfig, setMaggiConfig] = useState<MaggiConfig>(() => maggiStore.getSettings());
@@ -235,75 +234,25 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
     }
   }, [isOpen]);
 
-  // Mixed Content Detection (only local/private HTTP endpoints cannot be reached cleanly from HTTPS)
-  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
-  const isHttpEndpoint = cleanOllamaEndpoint(settings.ollamaEndpoint).startsWith('http://');
-  const showMixedContentWarning =
-    isHttps &&
-    isHttpEndpoint &&
-    isLoopbackOrPrivateEndpoint(settings.ollamaEndpoint) &&
-    settings.provider === 'ollama';
-
-  useEffect(() => {
-    if (showMixedContentWarning) {
-      setOllamaError(null);
-      setOllamaTestResult(null);
-      return;
-    }
-    if (isOpen && settings.provider === 'ollama' && activeTab === 'ai' && settings.ollamaEndpoint?.trim()) {
-      fetchOllamaModels();
-    } else if (settings.provider !== 'ollama') {
-      setOllamaError(null);
-      setOllamaTestResult(null);
-    }
-  }, [isOpen, settings.provider, activeTab, showMixedContentWarning]);
-
+  // Discovery is explicit: editing a URL must never overwrite other settings
+  // with the result of an older request.
   const fetchOllamaModels = async () => {
+    const id = ++ollamaProbeId.current;
     setIsFetchingModels(true);
     setOllamaError(null);
+    setOllamaTestResult(null);
+    setOllamaModels([]);
     try {
       const result = await testOllamaConnection(settings.ollamaEndpoint);
+      if (id !== ollamaProbeId.current) return;
       setOllamaTestResult(result);
-      if (result.ok) {
-        setOllamaModels(result.models);
-        const nextSettings = { ...settings };
-        let changed = false;
-        if (result.normalizedEndpoint && result.normalizedEndpoint !== settings.ollamaEndpoint) {
-          nextSettings.ollamaEndpoint = result.normalizedEndpoint;
-          changed = true;
-        }
-        if (!settings.ollamaModel && result.models.length > 0) {
-          nextSettings.ollamaModel = result.models[0].name;
-          changed = true;
-        }
-        if (changed) {
-          onUpdateSettings(nextSettings);
-        }
-      } else {
-        setOllamaError(result.detail || "Could not connect to Ollama.");
-      }
+      if (result.ok) setOllamaModels(result.models);
+      else setOllamaError(result.detail || 'Could not connect to Ollama.');
     } catch (err: any) {
-      const msg = err?.message || "Could not connect. Ensure Ollama is running.";
-      setOllamaError(msg);
-      setOllamaTestResult({
-        ok: false,
-        detail: msg,
-        models: [],
-        latencyMs: 0,
-        via: 'browser-direct',
-        normalizedEndpoint: cleanOllamaEndpoint(settings.ollamaEndpoint) || settings.ollamaEndpoint,
-      });
+      if (id === ollamaProbeId.current) setOllamaError(err?.message || 'Could not connect to Ollama.');
     } finally {
-      setIsFetchingModels(false);
+      if (id === ollamaProbeId.current) setIsFetchingModels(false);
     }
-  };
-
-  const handleCopyTunnelCmd = () => {
-    const cmd = 'cloudflared tunnel --url http://localhost:11434';
-    navigator.clipboard?.writeText(cmd).then(() => {
-      setCopiedTunnelCmd(true);
-      setTimeout(() => setCopiedTunnelCmd(false), 1800);
-    }).catch(() => {});
   };
 
   const handleBgChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -654,43 +603,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 {/* Ollama Settings */}
                 {settings.provider === 'ollama' && (
                   <div className="space-y-3 animate-pulse-fast-once">
-                      {showMixedContentWarning && (
-                        <div className="bg-amber-950/30 border border-amber-500/40 p-2.5 rounded-lg text-[10px] text-amber-200 space-y-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="font-bold text-amber-300">⚠️ Local HTTP on HTTPS Preview</p>
-                            {typeof window !== 'undefined' && window.self !== window.top && (
-                              <a
-                                href={window.location.href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="shrink-0 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold transition-colors"
-                              >
-                                Open in New Tab ↗
-                              </a>
-                            )}
-                          </div>
-                          <p>
-                            Browsers inside an HTTPS preview iframe block <code>http://localhost:11434</code>.
-                            Run a tunnel on your PC — our backend proxies it automatically (no CORS flags needed):
-                          </p>
-                          <div className="flex items-center gap-1.5 bg-black/40 p-1.5 rounded border border-amber-500/20">
-                            <code className="flex-1 text-amber-300 overflow-x-auto whitespace-nowrap">
-                              cloudflared tunnel --url http://localhost:11434
-                            </code>
-                            <button
-                              type="button"
-                              onClick={handleCopyTunnelCmd}
-                              className="shrink-0 px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold transition-colors"
-                            >
-                              {copiedTunnelCmd ? 'Copied ✓' : 'Copy'}
-                            </button>
-                          </div>
-                          <p className="opacity-90">
-                            Paste the generated <code>https://....trycloudflare.com</code> URL below and click <b>Test Connection</b>.
-                          </p>
-                        </div>
-                      )}
-
+                      <div className="rounded-lg border border-app-border bg-app-bg p-3 text-[11px] text-app-dim space-y-1">
+                        <p className="font-bold text-app-text">Local Ollama: quick setup</p>
+                        <p>Start Ollama on this computer, pull a model with <code>ollama pull llama3.2</code>, then click <b>Test Connection</b> and select a model. No API key is needed.</p>
+                        <p>Allow this app origin in Ollama using <code>OLLAMA_ORIGINS</code> and restart Ollama. Current origin: <code>{typeof window !== 'undefined' ? window.location.origin : ''}</code>.</p>
+                        <p>Browser local-network permissions or an embedded HTTPS preview can block access. Try opening the app in a new tab; if it is still blocked, run the app locally or use an HTTPS tunnel.</p>
+                      </div>
                       <div>
                         <label className="block text-[10px] text-app-dim mb-1">Endpoint URL</label>
                         <div className="flex gap-1.5">
@@ -698,6 +616,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                             type="text" 
                             value={settings.ollamaEndpoint}
                             onChange={(e) => {
+                              ollamaProbeId.current++;
+                              setIsFetchingModels(false);
+                              setOllamaModels([]);
                               setOllamaTestResult(null);
                               setOllamaError(null);
                               onUpdateSettings({ ...settings, ollamaEndpoint: e.target.value });
@@ -750,32 +671,21 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
                             </button>
                           )}
                         </div>
-                        {ollamaModels.length > 0 ? (
-                          <select 
-                            value={settings.ollamaModel}
-                            onChange={(e) => onUpdateSettings({ ...settings, ollamaModel: e.target.value })}
-                            className="w-full bg-app-input border border-app-border rounded px-2 py-1.5 text-xs text-app-text focus:outline-none"
-                          >
-                            <option value="" disabled>Select a model...</option>
-                            {ollamaModels.map(m => (
-                              <option key={m.name} value={m.name}>
-                                {m.name}{m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            type="text"
-                            value={settings.ollamaModel}
-                            onChange={(e) => onUpdateSettings({ ...settings, ollamaModel: e.target.value })}
-                            placeholder="Test connection to auto-load models, or type e.g. llama3.2"
-                            className="w-full bg-app-input border border-app-border rounded px-2 py-1.5 text-xs text-app-text focus:outline-none"
-                          />
-                        )}
+                        <input
+                          type="text"
+                          list="ollama-model-list"
+                          value={settings.ollamaModel}
+                          onChange={(e) => onUpdateSettings({ ...settings, ollamaModel: e.target.value })}
+                          placeholder="Select a discovered model or type its name"
+                          className="w-full bg-app-input border border-app-border rounded px-2 py-1.5 text-xs text-app-text focus:outline-none"
+                        />
+                        <datalist id="ollama-model-list">
+                          {ollamaModels.map(m => <option key={m.name} value={m.name} />)}
+                        </datalist>
                       </div>
                       <TestSubmission config={{ provider: 'ollama', endpoint: settings.ollamaEndpoint, model: settings.ollamaModel }} />
                       <p className="text-[9px] text-app-dim italic leading-relaxed">
-                        Tunnel URLs (`https://....trycloudflare.com`) route through our server proxy with no CORS setup needed. For direct browser loopback, start Ollama with <code>OLLAMA_ORIGINS="*" ollama serve</code>.
+                        Local requests go directly from your browser to the configured address. Remote tunnel URLs use the server proxy.
                       </p>
                   </div>
                 )}

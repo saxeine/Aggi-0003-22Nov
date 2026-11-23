@@ -88,6 +88,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [savedMaggiMessageIds, setSavedMaggiMessageIds] = useState<Record<string, boolean>>({});
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [autoSubmitSelection, setAutoSubmitSelection] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [isSuggestionsMinimized, setIsSuggestionsMinimized] = useState(false);
@@ -172,7 +173,6 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   const handleMenuClick = (promptContent: string, category: 'insight' | 'discovery' | 'structure') => { 
-      setInput(promptContent); 
       setActiveMenu(null); 
       onSuggestionClick(promptContent, category); 
   };
@@ -549,12 +549,12 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                   type="button"
                   onClick={() => onSwitchProvider(provider === 'ollama' ? 'gemini' : 'ollama')}
                   className="mx-1 self-center flex items-center gap-0.5 rounded-md border border-app-border bg-app-bg/90 px-2 py-1 text-[10px] font-bold tracking-wider transition-all hover:border-app-text/50"
-                  aria-label="FL/GM model switch"
+                  aria-label={`FL/GM model switch, ${provider === 'ollama' ? 'FL active' : provider === 'gemini' ? 'GM active' : `${provider} active; FL and GM inactive`}`}
                   title={`FL/GM: ${provider === 'ollama' ? 'Local LLM active — click to switch to Gemini' : provider === 'gemini' ? 'Gemini active — click to switch to Local LLM' : `${provider.toUpperCase()} active — click to switch to Local LLM`}`}
                 >
-                  <span className={provider === 'ollama' ? 'text-emerald-400 font-black' : 'text-app-dim'}>FL</span>
+                  <span className={provider === 'ollama' ? 'text-green-400 font-black' : 'text-red-400 font-normal'}>FL</span>
                   <span className="text-app-dim/50">/</span>
-                  <span className={provider === 'gemini' ? 'text-blue-400 font-black' : 'text-app-dim'}>GM</span>
+                  <span className={provider === 'gemini' ? 'text-green-400 font-black' : 'text-red-400 font-normal'}>GM</span>
                 </button>
               )}
               <button onClick={onToggleMindMap} className={`p-2 text-purple-500 hover:text-purple-400 rounded hover:bg-app-card transition-colors ${isMindMapLoading ? 'animate-pulse' : ''}`} title={t('chat.mindMapView')}>
@@ -633,7 +633,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                {suggestions.map((s, i) => (
                   <button 
                       key={i} 
-                      onClick={() => setInput(s)}
+                      onClick={() => { if (autoSubmitSelection) onSuggestionClick(s); else setInput(s); }}
                       disabled={isLoading} 
                       className={`px-3 py-1.5 border text-xs rounded-lg transition-colors text-left max-w-full truncate ${getSuggestionStyle(i)}`}
                   >
@@ -656,6 +656,18 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           </div>
         ))}
+        <div className="mb-2 flex items-center gap-2">
+          <button
+            type="button"
+            aria-pressed={autoSubmitSelection}
+            onClick={() => setAutoSubmitSelection(enabled => !enabled)}
+            className={`rounded-md border px-2 py-1 text-xs font-bold ${autoSubmitSelection ? 'border-green-500/60 bg-green-500/15 text-green-400' : 'border-app-border text-app-dim hover:text-app-text'}`}
+            title={t('chat.autoSubmitHelp')}
+          >
+            {t('chat.autoSubmit')}: {autoSubmitSelection ? t('chat.autoSubmitOn') : t('chat.autoSubmitOff')}
+          </button>
+          <span className="text-[10px] text-app-dim">{t('chat.autoSubmitHelp')}</span>
+        </div>
         <div className="flex gap-3 relative items-end">
           <div className="flex gap-2 pb-3">
              <button onClick={() => setIsLibraryOpen(true)} className="p-2 rounded-full transition-colors hover:bg-app-bg text-emerald-500/70 hover:text-emerald-500" title={t('chat.library')}><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" /></svg></button>
@@ -676,7 +688,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
          isOpen={isLibraryOpen}
          onClose={() => setIsLibraryOpen(false)}
          prompts={prompts}
-         onSelect={(content) => { setInput(content); setIsLibraryOpen(false); }}
+         onSelect={(content) => { if (autoSubmitSelection && !isLoading) onSuggestionClick(content); else setInput(content); setIsLibraryOpen(false); }}
          onAdd={onAddPrompt}
          onDelete={onDeletePrompt}
       />

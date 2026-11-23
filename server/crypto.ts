@@ -4,9 +4,20 @@
  */
 import express from 'express';
 import { getAiClient, generateContentWithFallback } from './gemini';
+import { aggregateRss, sanitizeRssSymbol, type FeedKind } from './rss';
 
 export const createCryptoRouter = () => {
   const router = express.Router();
+
+  const rssHandler = (kind: FeedKind) => async (req: express.Request, res: express.Response) => {
+    const symbol = sanitizeRssSymbol(req.query.symbol ?? (kind === 'stock' ? 'AAPL' : 'BTC'), kind);
+    if (!symbol) return res.status(400).json({ error: 'Invalid symbol.' });
+    const result = await aggregateRss(kind, symbol);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ...result, symbol });
+  };
+  router.get('/rss', rssHandler('crypto'));
+  router.get('/stock-rss', rssHandler('stock'));
 
 // Proxy for Crypto APIs
 // Cache for Crypto API responses to handle rate limits

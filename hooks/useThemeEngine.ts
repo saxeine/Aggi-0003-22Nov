@@ -1,6 +1,7 @@
 
 import { useState, useEffect } from 'react';
 import { Theme, ThemeSettings } from '../types';
+import { DEFAULT_GEMINI_MODEL } from '../constants/geminiModels';
 
 const THEME_KEY = 'gemini_media_aggregator_theme';
 const SETTINGS_KEY = 'gemini_media_aggregator_settings';
@@ -47,7 +48,7 @@ const DEFAULT_SETTINGS: ThemeSettings = {
   textSize: 100,
   showLabels: true,
   provider: 'gemini',
-  model: 'gemini-4-hydrogen',
+  model: DEFAULT_GEMINI_MODEL,
   enableCaching: false,
   geminiApiKey: '',
   maggiAutoIndexSession: true,
@@ -160,14 +161,13 @@ export const useThemeEngine = () => {
                 parsed.customApiKey = '';
                 if (
                   !parsed.model ||
-                  parsed.model === 'gemini-3.8-flash' ||
                   parsed.model === 'gemini-3.5-flash' ||
                   parsed.model === 'gemini-2.5-flash' ||
                   parsed.model === 'gemini-2.5-flash-preview-12-2025' ||
                   parsed.model.startsWith('gemini-2.0-') ||
                   parsed.model.startsWith('gemini-1.')
                 ) {
-                    parsed.model = 'gemini-4-hydrogen';
+                    parsed.model = DEFAULT_GEMINI_MODEL;
                 }
                 if (
                   !parsed.ollamaEndpoint ||

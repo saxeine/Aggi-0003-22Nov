@@ -1,3 +1,4 @@
+import { DEFAULT_GEMINI_MODEL } from '../constants/geminiModels';
 /**
  * MAGGI server routes.
  *
@@ -391,7 +392,7 @@ export const createMaggiRouter = (): Router => {
           parts: [{ text: m.content }],
         }));
 
-      const resolvedGeminiModel = normalizeModel((model && model.trim()) ? model.trim() : 'gemini-4-hydrogen');
+      const resolvedGeminiModel = normalizeModel((model && model.trim()) ? model.trim() : DEFAULT_GEMINI_MODEL);
       const isGemini4 = resolvedGeminiModel.toLowerCase().startsWith('gemini-4-');
       const response = await generateContentWithFallback(ai, {
         model: resolvedGeminiModel,

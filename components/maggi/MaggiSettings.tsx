@@ -473,12 +473,12 @@ const MaggiSettingsPanel: React.FC<Props> = ({ settings, onChange, onReset, onOp
             <div className="space-y-3">
               <Field
                 label="Ollama URL"
-                hint="For HTTPS preview, run: cloudflared tunnel --url http://localhost:11434 and paste the https://....trycloudflare.com URL here."
+                hint={`For local Ollama, start the server, install a model and allow this app origin (${typeof window !== 'undefined' ? window.location.origin : 'your app origin'}) in OLLAMA_ORIGINS. Local requests are made by your browser. If blocked, open a new tab, run the app locally or use an HTTPS tunnel.`}
               >
                 <TextInput
                   value={settings.ollamaBaseUrl}
                   onChange={(e) => onChange({ ollamaBaseUrl: e.target.value.replace(/\s+/g, '') })}
-                  placeholder="https://your-tunnel.trycloudflare.com"
+                  placeholder="http://localhost:11434"
                 />
               </Field>
               <Field label="Model"><TextInput value={settings.ollamaModel} onChange={(e) => onChange({ ollamaModel: e.target.value.trim() })} /></Field>
