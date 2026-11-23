@@ -1,3 +1,5 @@
+import { DEFAULT_GEMINI_MODEL } from '../constants/geminiModels';
+
 /**
  * MAGGI configuration — single source of truth for the RAG knobs.
  *
@@ -115,7 +117,7 @@ export const DEFAULT_MAGGI_SETTINGS: MaggiSettings = {
   freeLlmApiModel: 'auto',
   freeLlmVoiceModel: 'auto',
 
-  geminiModel: 'gemini-4-hydrogen',
+  geminiModel: DEFAULT_GEMINI_MODEL,
 
   openAiBaseUrl: 'https://api.openai.com/v1',
   openAiApiKey: '',

@@ -1,3 +1,4 @@
+import { DEFAULT_GEMINI_MODEL } from '../../constants/geminiModels';
 /**
  * MAGGI engine helpers — environment key pool, model selection, base-URL
  * validation, streaming relay and text-extraction utilities.
@@ -318,8 +319,8 @@ export const pickModelForPlatform = (platform: string, requestedModel: string, c
       return { model: isAuto ? 'glm-4-flash' : req, defaults };
     }
     case 'google': {
-      const defaults = ['gemini-4-hydrogen', 'gemini-4-neon', 'gemini-3.1-flash-lite'];
-      return { model: isAuto ? 'gemini-4-hydrogen' : req, defaults };
+      const defaults = [DEFAULT_GEMINI_MODEL, 'gemini-4-hydrogen', 'gemini-4-neon', 'gemini-3.1-flash-lite'];
+      return { model: isAuto ? DEFAULT_GEMINI_MODEL : req, defaults };
     }
     case 'groq': {
       const defaults = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];

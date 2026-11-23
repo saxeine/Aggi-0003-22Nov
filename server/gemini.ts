@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI } from '@google/genai';
 import { isBlockedIpOrHost } from './maggi/keyPool';
+import { DEFAULT_GEMINI_MODEL } from '../constants/geminiModels';
 
 // Initialize Gemini
 export const getAiClient = (req?: express.Request) => {
@@ -308,12 +309,14 @@ const sanitizeGeminiParams = (params: any): any => {
 
 // Normalize model names to production-ready versions
 export const normalizeModel = (model: string): string => {
-  if (!model || !model.trim()) return 'gemini-4-hydrogen';
+  if (!model || !model.trim()) return DEFAULT_GEMINI_MODEL;
   const trimmed = model.trim();
   const norm = trimmed.toLowerCase();
 
   // Exact valid latest models pass through untouched
   if (
+    norm === 'gemini-3.8-flash' ||
+    norm === 'gemini-3.7-flash' ||
     norm === 'gemini-4-hydrogen' ||
     norm === 'gemini-4-neon' ||
     norm === 'gemini-4-argon' ||
@@ -331,7 +334,6 @@ export const normalizeModel = (model: string): string => {
   }
 
   if (
-    norm.includes('gemini-3.8-flash') ||
     norm.includes('gemini-flash-latest') ||
     norm.includes('gemini-3.5-flash') ||
     norm.includes('gemini-3-flash') ||
@@ -341,7 +343,7 @@ export const normalizeModel = (model: string): string => {
     norm.includes('gemini-flash') ||
     norm === 'flash'
   ) {
-    return 'gemini-4-hydrogen';
+    return DEFAULT_GEMINI_MODEL;
   }
 
   if (
@@ -394,7 +396,7 @@ Format Instructions:
 4. Output only the plain script content, no wrapping markdown blocks (like \`\`\`fountain or \`\`\`text) or conversational text.`;
 
       const response = await generateContentWithFallback(ai, {
-        model: 'gemini-4-hydrogen',
+        model: DEFAULT_GEMINI_MODEL,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
       });
 
@@ -433,7 +435,7 @@ Output your response strictly as a JSON array of objects with the exact schema. 
 Each object must have the fields: "sceneNo", "shotNo", "shotType", "duration", "action", "dialogue", "notes".`;
 
       const response = await generateContentWithFallback(ai, {
-        model: 'gemini-4-hydrogen',
+        model: DEFAULT_GEMINI_MODEL,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           responseMimeType: 'application/json'
@@ -461,7 +463,7 @@ Each object must have the fields: "sceneNo", "shotNo", "shotType", "duration", "
 
   router.post('/bring-to-life', async (req, res) => {
     try {
-      const { prompt, imageBase64, mimeType, modelName = 'gemini-4-hydrogen' } = req.body;
+      const { prompt, imageBase64, mimeType, modelName = DEFAULT_GEMINI_MODEL } = req.body;
       const ai = getAiClient(req);
       const parts: any[] = [];
 
@@ -505,7 +507,7 @@ Each object must have the fields: "sceneNo", "shotNo", "shotType", "duration", "
 
   router.post('/generate', async (req, res) => {
     try {
-      const { contents, config, model = 'gemini-4-hydrogen' } = req.body;
+      const { contents, config, model = DEFAULT_GEMINI_MODEL } = req.body;
       const ai = getAiClient(req);
       const finalModel = normalizeModel(model);
       const response = await generateContentWithFallback(ai, {

@@ -71,9 +71,6 @@ export const isLoopbackOrPrivateEndpoint = (endpoint: string): boolean => {
   }
 };
 
-const isBrowserHttps = (): boolean =>
-  typeof window !== 'undefined' && window.location.protocol === 'https:';
-
 async function parseJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   if (text.trim().startsWith('<')) {
@@ -115,20 +112,12 @@ const normaliseModelList = (rawModels: unknown): OllamaModel[] => {
     .filter((m) => Boolean(m.name));
 };
 
-const buildMixedContentHelp = (endpoint: string): string => {
-  const inIframe = typeof window !== 'undefined' && window.self !== window.top;
-  return (
-    "**Ollama Connection Failed (Mixed Content / Local Loopback Blocked)**\n\n" +
-    (inIframe
-      ? `This app is running on **HTTPS inside an iframe**, so the browser blocks direct requests to local HTTP (\`${endpoint}\`) and the cloud server cannot reach your machine's localhost.\n\n`
-      : `This app is running on **HTTPS**, and the browser blocked direct access to \`${endpoint}\`.\n\n`) +
-    "**Fix 1 — HTTPS Tunnel (works inside preview, no CORS flags needed):**\n" +
-    "1. Install `cloudflared` (or `ngrok`).\n" +
-    "2. Run: `cloudflared tunnel --url http://localhost:11434`\n" +
-    "3. Paste the `https://....trycloudflare.com` URL above and click **Test Connection**.\n\n" +
-    "**Fix 2 — Open outside iframe (Chrome/Edge):**\n" +
-    "Start Ollama with `OLLAMA_ORIGINS=\"*\" ollama serve`, open the app in a **New Tab**, and use `http://127.0.0.1:11434`."
-  );
+const buildLocalConnectionHelp = (endpoint: string): string => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'your app origin';
+  return `Could not reach Ollama at ${endpoint} from this browser. Make sure Ollama is running and the model is installed. `
+    + `Allow this app origin (${origin}) in OLLAMA_ORIGINS and restart Ollama. `
+    + `Browser local-network permissions, HTTPS/private-network restrictions or an embedded preview may also block access; open the app in a new tab and retry. `
+    + `If direct access is blocked, use an HTTPS tunnel or run the app locally.`;
 };
 
 async function browserDirectFetch(
@@ -167,7 +156,8 @@ async function browserDirectFetch(
           "**Ollama Connection Failed**\n\nThe local proxy could not reach Ollama at `http://localhost:11434`. Ensure `ollama serve` is running."
         );
       }
-      throw new OllamaError('http_error', `Ollama API returned ${res.status}: ${res.statusText}`);
+      const detail = await res.text().catch(() => '');
+      throw new OllamaError('http_error', `Ollama API returned HTTP ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`);
     }
     return res;
   } catch (err: any) {
@@ -178,8 +168,8 @@ async function browserDirectFetch(
     if (err?.name === 'AbortError') {
       throw new OllamaError('timeout', `Ollama request timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
     }
-    if (isBrowserHttps() && baseUrl.startsWith('http://')) {
-      throw new OllamaError('mixed_content', buildMixedContentHelp(baseUrl), err);
+    if (isLoopbackOrPrivateEndpoint(baseUrl)) {
+      throw new OllamaError('network', buildLocalConnectionHelp(baseUrl), err);
     }
     throw new OllamaError(
       'network',
@@ -199,36 +189,12 @@ async function fetchLoopbackWithFallback(
   options: RequestInit = {},
   timeoutMs = 90_000
 ): Promise<{ response: Response; via: 'vite-proxy' | 'browser-direct' }> {
+  // Localhost always means the user's browser machine, not the app server.
+  // Never silently route a local request to the server or another host.
   const cleaned = cleanOllamaEndpoint(endpoint) || 'http://localhost:11434';
-  const isHttps = isBrowserHttps();
+  const response = await browserDirectFetch(cleaned, path, options, timeoutMs);
+  return { response, via: 'browser-direct' };
 
-  // On local HTTP dev, try Vite proxy first for localhost:11434 / 127.0.0.1:11434
-  if (!isHttps && (cleaned === 'http://localhost:11434' || cleaned === 'http://127.0.0.1:11434')) {
-    try {
-      const response = await browserDirectFetch('/ollama', path, options, timeoutMs);
-      return { response, via: 'vite-proxy' };
-    } catch {
-      if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      // Fall through to direct loopback attempts
-    }
-  }
-
-  try {
-    const response = await browserDirectFetch(cleaned, path, options, timeoutMs);
-    return { response, via: 'browser-direct' };
-  } catch (err: any) {
-    if (options.signal?.aborted) throw err;
-    if (cleaned.includes('localhost')) {
-      const fallbackUrl = cleaned.replace('localhost', '127.0.0.1');
-      try {
-        const response = await browserDirectFetch(fallbackUrl, path, options, timeoutMs);
-        return { response, via: 'browser-direct' };
-      } catch {
-        throw err;
-      }
-    }
-    throw err;
-  }
 }
 
 export const testOllamaConnection = async (endpoint: string): Promise<OllamaTestResult> => {
@@ -347,7 +313,7 @@ export const testOllamaConnection = async (endpoint: string): Promise<OllamaTest
     };
   }
 
-  // Loopback / private host: try Vite proxy (if HTTP) or direct loopback fetch from browser
+  // Local and private hosts are reached from the browser, not the cloud server.
   try {
     const { response, via } = await fetchLoopbackWithFallback(normalizedEndpoint, '/api/tags', { method: 'GET' }, 7000);
     const data = await parseJson<{ models: OllamaModel[] }>(response);
@@ -394,7 +360,7 @@ export const generateOllamaResponse = async function* (
   currentPrompt: string,
   history: Message[],
   mediaItems: MediaItem[],
-  options?: { signal?: AbortSignal; maxTokens?: number },
+  options?: { signal?: AbortSignal; maxTokens?: number; temperature?: number; messages?: Array<{ role: string; content: string }> },
 ): AsyncGenerator<string, void, unknown> {
   const images = mediaItems
     .filter((item) => item.type === "image")
@@ -431,6 +397,7 @@ export const generateOllamaResponse = async function* (
     images: images.length > 0 ? images : undefined,
   } as any);
 
+  const requestMessages = options?.messages || messages;
   const normalizedEndpoint = cleanOllamaEndpoint(endpoint) || 'http://localhost:11434';
   let response: Response | null = null;
 
@@ -442,9 +409,9 @@ export const generateOllamaResponse = async function* (
       body: JSON.stringify({
         endpoint: normalizedEndpoint,
         model: modelName,
-        messages,
+        messages: requestMessages,
         stream: true,
-        ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}),
+        ...((options?.maxTokens || options?.temperature !== undefined) ? { options: { ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}) } } : {}),
       }),
     });
 
@@ -465,7 +432,7 @@ export const generateOllamaResponse = async function* (
             method: 'POST',
             signal: options?.signal,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: modelName, messages, stream: true, ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}) }),
+            body: JSON.stringify({ model: modelName, messages: requestMessages, stream: true, ...((options?.maxTokens || options?.temperature !== undefined) ? { options: { ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}) } } : {}) }),
           });
         } catch {
           if (options?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -482,7 +449,7 @@ export const generateOllamaResponse = async function* (
             provider: 'ollama',
             baseUrl: normalizedEndpoint,
             model: modelName,
-            messages,
+            messages: requestMessages,
             ...(options?.maxTokens ? { maxTokens: options.maxTokens } : {}),
           }),
         });
@@ -507,9 +474,9 @@ export const generateOllamaResponse = async function* (
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelName,
-        messages,
+        messages: requestMessages,
         stream: true,
-        ...(options?.maxTokens ? { options: { num_predict: options.maxTokens } } : {}),
+        ...((options?.maxTokens || options?.temperature !== undefined) ? { options: { ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}) } } : {}),
       }),
     });
     response = result.response;
@@ -546,11 +513,11 @@ export const generateOllamaResponse = async function* (
         if (line.trim()) {
           try {
             const data = JSON.parse(line);
-            if (data.message?.content) {
-              yield data.message.content;
-            }
-          } catch {
-            console.warn('Failed to parse NDJSON line:', line);
+            if (data.error) throw new OllamaError('http_error', String(data.error));
+            if (data.message?.content) yield data.message.content;
+          } catch (err) {
+            if (err instanceof OllamaError) throw err;
+            throw new OllamaError('parse_error', 'Invalid streaming response from Ollama.', err);
           }
         }
       }
@@ -558,11 +525,11 @@ export const generateOllamaResponse = async function* (
     if (buffer.trim()) {
       try {
         const data = JSON.parse(buffer);
-        if (data.message?.content) {
-          yield data.message.content;
-        }
-      } catch {
-        console.warn('Failed to parse NDJSON line:', buffer);
+        if (data.error) throw new OllamaError('http_error', String(data.error));
+        if (data.message?.content) yield data.message.content;
+      } catch (err) {
+        if (err instanceof OllamaError) throw err;
+        throw new OllamaError('parse_error', 'Invalid streaming response from Ollama.', err);
       }
     }
   } finally {

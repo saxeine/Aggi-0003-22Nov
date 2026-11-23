@@ -8,16 +8,30 @@ export interface GeminiModelOption {
   description: string;
 }
 
-export const DEFAULT_GEMINI_MODEL = 'gemini-4-hydrogen';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 export const GEMINI_MODELS: GeminiModelOption[] = [
+  {
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
+    shortLabel: 'Flash 3.8',
+    tier: 'fast',
+    recommended: true,
+    description: 'Default Flash model. Availability depends on your Gemini API account.',
+  },
+  {
+    id: 'gemini-3.7-flash',
+    name: 'Gemini 3.7 Flash',
+    shortLabel: 'Flash 3.7',
+    tier: 'fast',
+    description: 'Gemini 3.7 Flash model. Availability depends on your Gemini API account.',
+  },
   {
     id: 'gemini-4-hydrogen',
     name: 'Gemini 4 Hydrogen (Flash)',
     shortLabel: 'Hydrogen 4',
     tier: 'fast',
-    recommended: true,
-    description: 'Default fast multimodal model for summarization, research Q&A, and daily workflows.',
+    description: 'Fast multimodal model for summarization, research Q&A, and daily workflows.',
   },
   {
     id: 'gemini-3.1-flash-lite',
@@ -90,7 +104,7 @@ export const normalizeGeminiModelId = (model?: string): string => {
   const trimmed = model.trim();
   const norm = trimmed.toLowerCase();
 
-  if (norm === 'gemini-3.1-pro-preview') {
+  if (norm === 'gemini-3.8-flash' || norm === 'gemini-3.7-flash' || norm === 'gemini-3.1-pro-preview') {
     return norm;
   }
   if (norm === 'gemini-2.5-flash-preview-12-2025') {
@@ -103,10 +117,9 @@ export const normalizeGeminiModelId = (model?: string): string => {
     return norm;
   }
 
-  // Upgrade deprecated/legacy flash aliases to latest default Flash (Gemini 4 Hydrogen)
+  // Upgrade deprecated/legacy flash aliases to the default Flash model
   if (
     norm === 'flash' ||
-    norm.includes('gemini-3.8-flash') ||
     norm.includes('gemini-flash-latest') ||
     norm.includes('gemini-3.5-flash') ||
     norm.includes('gemini-3-flash') ||
